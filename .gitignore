@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Models and data
+models/
+*.bin
+*.pt
+*.onnx
+
+# Logs
+logs/
+*.log
+
+# Mac specific
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
