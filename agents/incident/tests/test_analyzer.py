@@ -10,6 +10,7 @@ from agents.incident.analyzer import (
     _create_llm_prompt, 
     _call_llm_service, 
     _parse_llm_response,
+    _calculate_confidence,
     LLM_SERVICE_URL
 )
 
@@ -322,3 +323,71 @@ def test_parse_llm_response_no_json():
     assert len(errors) == 1
     # Check for the updated error message
     assert "Could not find JSON object structure" in errors[0] 
+
+# --- Tests for _calculate_confidence ---
+
+@pytest.fixture
+def full_parsed_data() -> LLMStructuredResponse:
+    """Provides a fully populated LLMStructuredResponse fixture."""
+    return LLMStructuredResponse(
+        potential_root_causes=["Cause A", "Cause B"],
+        recommended_actions=["Action 1", "Action 2"],
+        potential_impact="High impact scenario.",
+        confidence_explanation="Very confident based on data."
+    )
+
+@pytest.fixture
+def minimal_parsed_data() -> LLMStructuredResponse:
+    """Provides an LLMStructuredResponse with only required fields (empty lists)."""
+    return LLMStructuredResponse(
+        potential_root_causes=[],
+        recommended_actions=[]
+        # Optional fields are None by default
+    )
+
+@pytest.fixture
+def partial_parsed_data_whitespace() -> LLMStructuredResponse:
+    """Provides data with some fields present but only whitespace."""
+    return LLMStructuredResponse(
+        potential_root_causes=["Cause C"],
+        recommended_actions=["Action 3"],
+        potential_impact="   ", # Whitespace only
+        confidence_explanation="  "
+    )
+
+def test_calculate_confidence_parsing_failed():
+    """Tests confidence score when parsing failed (input is None)."""
+    score = _calculate_confidence(None, "some raw response")
+    assert score == pytest.approx(0.1)
+
+def test_calculate_confidence_full_success(full_parsed_data):
+    """Tests confidence score with a complete and valid parsed response."""
+    score = _calculate_confidence(full_parsed_data, "some raw response")
+    # Base (0.5) + causes (0.1) + actions (0.1) + impact (0.1) + explanation (0.1) = 0.9
+    assert score == pytest.approx(0.9)
+
+def test_calculate_confidence_minimal_success(minimal_parsed_data):
+    """Tests confidence score with minimal valid data (empty lists, no optional fields)."""
+    score = _calculate_confidence(minimal_parsed_data, "some raw response")
+    # Base (0.5) + empty causes (0) + empty actions (0) + no impact (0) + no explanation (0) = 0.5
+    assert score == pytest.approx(0.5)
+
+def test_calculate_confidence_partial_data_whitespace(partial_parsed_data_whitespace):
+    """Tests that fields with only whitespace do not increase score."""
+    score = _calculate_confidence(partial_parsed_data_whitespace, "some raw response")
+    # Base (0.5) + causes (0.1) + actions (0.1) + whitespace impact (0) + whitespace explanation (0) = 0.7
+    assert score == pytest.approx(0.7)
+
+def test_calculate_confidence_partial_data_missing_optional(minimal_parsed_data):
+    """Tests score when optional fields are missing (covered by minimal test, but explicit)."""
+    # Reuse minimal_parsed_data which has optional fields as None
+    minimal_parsed_data.potential_root_causes = ["One Cause"] # Add one required field
+    score = _calculate_confidence(minimal_parsed_data, "some raw response")
+    # Base (0.5) + causes (0.1) + empty actions (0) + no impact (0) + no explanation (0) = 0.6
+    assert score == pytest.approx(0.6)
+
+def test_calculate_confidence_max_score(full_parsed_data: LLMStructuredResponse):
+    """Ensures score does not exceed 1.0 (using full_parsed_data)."""
+    # This test uses the same data as full_success, just confirms the cap explicitly
+    score = _calculate_confidence(full_parsed_data, "some raw response") 
+    assert score <= 1.0 

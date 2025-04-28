@@ -178,16 +178,17 @@ async def analyze_incident(incident: IncidentReport) -> AnalysisResult:
     
     if parsed_data:
         analysis_result.parsed_response = parsed_data
-        # We tentatively set source to 'llm' if the call succeeded,
-        # parsing success confirms it.
         analysis_result.analysis_source = "llm"
     else:
-        # Error details were already added to analysis_result.errors by _parse_llm_response
         analysis_result.analysis_source = "error"
-        # We might still want to proceed to calculate a low confidence score even if parsing fails
+        # Proceed even if parsing fails, to calculate a low confidence score
 
-    # --- TODO: Step 5: Calculate Confidence Score --- 
-    # analysis_result.confidence_score = _calculate_confidence(analysis_result.parsed_response, llm_raw_response)
+    # --- Step 5: Calculate Confidence Score --- 
+    # Pass both parsed_data (can be None) and the original raw response
+    analysis_result.confidence_score = _calculate_confidence(
+        parsed_data, 
+        llm_raw_response if llm_raw_response else "" # Ensure raw_response is not None
+    )
 
     # --- TODO: Step 6: Extract Actionable Insights --- 
     # if analysis_result.parsed_response:
@@ -198,13 +199,13 @@ async def analyze_incident(incident: IncidentReport) -> AnalysisResult:
     #    _add_to_cache(incident, analysis_result)
 
     # --- Finalize ---
-    # Analysis source is now set based on parsing success/failure
+    # Analysis source is set based on parsing success/failure
     end_time = datetime.datetime.now()
     analysis_result.processing_time_seconds = (end_time - start_time).total_seconds()
     if analysis_result.analysis_source != "error":
-        logger.info(f"Analysis complete for incident ID: {incident.incident_id} in {analysis_result.processing_time_seconds:.2f}s")
+        logger.info(f"Analysis complete for incident ID: {incident.incident_id} in {analysis_result.processing_time_seconds:.2f}s (Confidence: {analysis_result.confidence_score:.2f})")
     else:
-         logger.warning(f"Analysis for incident ID: {incident.incident_id} completed with errors in {analysis_result.processing_time_seconds:.2f}s")
+         logger.warning(f"Analysis for incident ID: {incident.incident_id} completed with errors in {analysis_result.processing_time_seconds:.2f}s (Confidence: {analysis_result.confidence_score:.2f})")
 
     return analysis_result
 
@@ -275,24 +276,46 @@ def _parse_llm_response(response: str, errors_list: list) -> Optional[LLMStructu
         errors_list.append(error_msg)
         return None
 
-# def _calculate_confidence(parsed_data: Optional[LLMStructuredResponse], raw_response: str) -> Optional[float]:
-#     # Implementation to calculate confidence score (0.0 - 1.0)
-#     # Factors: was parsing successful? fields populated? keywords? response length?
-#     logger.info("Calculating confidence score...")
-#     if parsed_data is None:
-#         return 0.1 # Low confidence if parsing failed
-    
-#     score = 0.5 # Base score
-#     if parsed_data.potential_root_causes: score += 0.1
-#     if parsed_data.recommended_actions: score += 0.1
-#     if parsed_data.potential_impact: score += 0.1
-#     if parsed_data.confidence_explanation: score += 0.1
-    
-#     # Add more sophisticated checks (e.g., keyword analysis, length, check explanation)
-    
-#     return min(score, 1.0) # Cap at 1.0
+def _calculate_confidence(parsed_data: Optional[LLMStructuredResponse], raw_response: str) -> float:
+    """Calculates a confidence score (0.0 - 1.0) based on parsing success
+    and completeness of the structured response.
 
-# def _extract_insights(parsed_data: LLMStructuredResponse) -> List[ActionableInsight]:
+    Args:
+        parsed_data: The parsed LLMStructuredResponse object, or None if parsing failed.
+        raw_response: The raw response string from the LLM (can be used for future checks).
+
+    Returns:
+        A float between 0.0 and 1.0 representing the confidence score.
+    """
+    logger.info("Calculating confidence score...")
+    
+    if parsed_data is None:
+        logger.warning("Confidence score is low due to parsing failure.")
+        return 0.1 # Low confidence if parsing failed outright
+    
+    # Start with a base score assuming parsing was successful
+    score = 0.5 
+    
+    # Increase score based on presence and basic validity of fields
+    if parsed_data.potential_root_causes: # Check if list is not empty
+        score += 0.1
+    if parsed_data.recommended_actions: # Check if list is not empty
+        score += 0.1
+    if parsed_data.potential_impact and parsed_data.potential_impact.strip(): # Check if not None and not empty/whitespace
+        score += 0.1
+    if parsed_data.confidence_explanation and parsed_data.confidence_explanation.strip(): # Check if not None and not empty/whitespace
+        score += 0.1
+        
+    # --- Future Enhancements --- 
+    # - Check for specific keywords in explanation (e.g., "uncertain", "low confidence")
+    # - Analyze length/detail of causes and actions
+    # - Use raw_response length or structure as a factor
+    
+    final_score = min(score, 1.0) # Ensure score doesn't exceed 1.0
+    logger.info(f"Calculated confidence score: {final_score:.2f}")
+    return final_score
+
+# def _extract_insights(parsed_data: LLMStructuredResponse, incident_id: str) -> List[ActionableInsight]:
 #     # Implementation to identify actionable steps from recommended_actions
 #     logger.info("Extracting actionable insights...")
 #     insights = []
@@ -319,7 +342,7 @@ def _parse_llm_response(response: str, errors_list: list) -> Optional[LLMStructu
 #             insight_type = "escalate"
             
 #         insights.append(ActionableInsight(
-#             insight_id=f"{parsed_data.incident_id}-insight-{i+1}", # Link insight to incident
+#             insight_id=f"{incident_id}-insight-{i+1}", # Link insight to incident
 #             description=action,
 #             type=insight_type,
 #             target=target # Placeholder for extracted target
