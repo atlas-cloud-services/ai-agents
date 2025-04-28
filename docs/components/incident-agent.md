@@ -39,7 +39,7 @@ This agent analyzes incident reports to provide structured insights, potential c
 *   Run tests from the project root: `pytest`
 *   (Future) An API endpoint or direct invocation via the **Master Control Program (MCP)** will trigger the agent.
 
-## Current Status (as of YYYY-MM-DD)
+## Current Status (as of 2025-04-28)
 
 *   Core data models defined.
 *   Prompt generation logic implemented and unit tested.
