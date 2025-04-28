@@ -5,8 +5,13 @@ from freezegun import freeze_time
 from pytest_httpx import HTTPXMock # Import the mocker
 
 # Use absolute imports from the project root
-from agents.incident.models import IncidentReport
-from agents.incident.analyzer import _create_llm_prompt, _call_llm_service, LLM_SERVICE_URL
+from agents.incident.models import IncidentReport, LLMStructuredResponse
+from agents.incident.analyzer import (
+    _create_llm_prompt, 
+    _call_llm_service, 
+    _parse_llm_response,
+    LLM_SERVICE_URL
+)
 
 # Sample data for testing
 TIMESTAMP_NOW = datetime.datetime(2024, 8, 15, 10, 30, 0)
@@ -176,3 +181,144 @@ async def test_call_llm_service_invalid_json_response(httpx_mock: HTTPXMock):
 
     # Assert: Check that None is returned
     assert result is None 
+
+# --- Tests for _parse_llm_response --- 
+
+VALID_JSON_STRING = '''
+{
+  "potential_root_causes": [
+    "Cause A",
+    "Cause B"
+  ],
+  "recommended_actions": [
+    "Action 1",
+    "Action 2"
+  ],
+  "potential_impact": "High",
+  "confidence_explanation": "Based on logs."
+}
+'''
+
+VALID_JSON_STRING_MINIMAL = '''
+{
+  "potential_root_causes": [],
+  "recommended_actions": []
+}
+''' # Minimal valid response (optional fields are None)
+
+JSON_WITH_EXTRA_TEXT = '''
+Some introductory text from the LLM.
+```json
+{
+  "potential_root_causes": ["Network issue"],
+  "recommended_actions": ["Check connectivity"],
+  "potential_impact": "Connectivity loss",
+  "confidence_explanation": "Likely cause."
+}
+```
+And some trailing text.
+'''
+
+INVALID_JSON_SYNTAX = '''
+{
+  "potential_root_causes": ["Bad syntax"],
+  "recommended_actions": ["Fix it"],
+  "potential_impact": "Medium"
+  "confidence_explanation": "Uncertain" // Missing comma
+}
+'''
+
+MISSING_REQUIRED_FIELD_JSON = '''
+{
+  "recommended_actions": ["Action X"],
+  "potential_impact": "Low",
+  "confidence_explanation": "Guessing."
+}
+''' # Missing potential_root_causes
+
+WRONG_DATA_TYPE_JSON = '''
+{
+  "potential_root_causes": "Just one cause", 
+  "recommended_actions": ["Action Y"],
+  "potential_impact": "Low",
+  "confidence_explanation": "Maybe?"
+}
+''' # potential_root_causes should be a list
+
+def test_parse_llm_response_success():
+    """Tests parsing a valid and complete JSON response."""
+    errors = []
+    result = _parse_llm_response(VALID_JSON_STRING, errors)
+    assert isinstance(result, LLMStructuredResponse)
+    assert result.potential_root_causes == ["Cause A", "Cause B"]
+    assert result.recommended_actions == ["Action 1", "Action 2"]
+    assert result.potential_impact == "High"
+    assert result.confidence_explanation == "Based on logs."
+    assert not errors # No errors should be added
+
+def test_parse_llm_response_minimal_success():
+    """Tests parsing a valid JSON with only required fields."""
+    errors = []
+    result = _parse_llm_response(VALID_JSON_STRING_MINIMAL, errors)
+    assert isinstance(result, LLMStructuredResponse)
+    assert result.potential_root_causes == []
+    assert result.recommended_actions == []
+    assert result.potential_impact is None
+    assert result.confidence_explanation is None
+    assert not errors
+
+def test_parse_llm_response_with_extra_text():
+    """Tests parsing valid JSON surrounded by extra text."""
+    errors = []
+    result = _parse_llm_response(JSON_WITH_EXTRA_TEXT, errors)
+    assert isinstance(result, LLMStructuredResponse)
+    assert result.potential_root_causes == ["Network issue"]
+    assert result.recommended_actions == ["Check connectivity"]
+    assert result.potential_impact == "Connectivity loss"
+    assert result.confidence_explanation == "Likely cause."
+    assert not errors
+
+def test_parse_llm_response_invalid_syntax():
+    """Tests parsing a response with invalid JSON syntax."""
+    errors = []
+    result = _parse_llm_response(INVALID_JSON_SYNTAX, errors)
+    assert result is None
+    assert len(errors) == 1 # One error should be added
+    # Check for the updated error message prefix
+    assert "Failed to decode extracted JSON string" in errors[0]
+
+def test_parse_llm_response_missing_required_field():
+    """Tests parsing valid JSON missing a required field."""
+    errors = []
+    result = _parse_llm_response(MISSING_REQUIRED_FIELD_JSON, errors)
+    assert result is None
+    assert len(errors) == 1
+    assert "Error validating parsed LLM response data" in errors[0]
+    # Pydantic v2 provides more detailed error messages
+    assert "Field required" in errors[0] or "potential_root_causes" in errors[0]
+
+def test_parse_llm_response_wrong_data_type():
+    """Tests parsing valid JSON with a field of the wrong data type."""
+    errors = []
+    result = _parse_llm_response(WRONG_DATA_TYPE_JSON, errors)
+    assert result is None
+    assert len(errors) == 1
+    assert "Error validating parsed LLM response data" in errors[0]
+    assert "Input should be a valid list" in errors[0] or "potential_root_causes" in errors[0]
+
+def test_parse_llm_response_empty_string():
+    """Tests parsing an empty string response."""
+    errors = []
+    result = _parse_llm_response("", errors)
+    assert result is None
+    assert len(errors) == 1
+    assert "LLM response was empty" in errors[0]
+
+def test_parse_llm_response_no_json():
+    """Tests parsing a string that does not contain a JSON object."""
+    errors = []
+    result = _parse_llm_response("This is just plain text.", errors)
+    assert result is None
+    assert len(errors) == 1
+    # Check for the updated error message
+    assert "Could not find JSON object structure" in errors[0] 

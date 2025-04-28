@@ -3,6 +3,7 @@ import logging
 from typing import Dict, Any, Optional
 import json
 import httpx # Added for making HTTP requests
+import re # Added for regular expression matching
 
 from .models import IncidentReport, AnalysisResult, LLMStructuredResponse, ActionableInsight
 
@@ -172,36 +173,32 @@ async def analyze_incident(incident: IncidentReport) -> AnalysisResult:
     # Store the raw response if successful
     analysis_result.llm_raw_response = llm_raw_response
 
-    # --- TODO: Step 4: Parse LLM Response --- 
-    # parsed_data = _parse_llm_response(llm_raw_response)
-    # if parsed_data:
-    #     analysis_result.parsed_response = parsed_data
-    #     analysis_result.analysis_source = "llm"
-    # else:
-    #     # Handle parsing errors - update analysis_result.errors and analysis_source
-    #     error_msg = "Failed to parse structured data from LLM response."
-    #     analysis_result.errors.append(error_msg)
-    #     analysis_result.analysis_source = "error"
-    #     # Decide if we should still proceed or return here
+    # --- Step 4: Parse LLM Response --- 
+    parsed_data = _parse_llm_response(llm_raw_response, analysis_result.errors)
+    
+    if parsed_data:
+        analysis_result.parsed_response = parsed_data
+        # We tentatively set source to 'llm' if the call succeeded,
+        # parsing success confirms it.
+        analysis_result.analysis_source = "llm"
+    else:
+        # Error details were already added to analysis_result.errors by _parse_llm_response
+        analysis_result.analysis_source = "error"
+        # We might still want to proceed to calculate a low confidence score even if parsing fails
 
     # --- TODO: Step 5: Calculate Confidence Score --- 
     # analysis_result.confidence_score = _calculate_confidence(analysis_result.parsed_response, llm_raw_response)
 
     # --- TODO: Step 6: Extract Actionable Insights --- 
     # if analysis_result.parsed_response:
-    #     analysis_result.actionable_insights = _extract_insights(analysis_result.parsed_response)
+    #     analysis_result.actionable_insights = _extract_insights(analysis_result.parsed_response, incident.incident_id)
 
     # --- TODO: Step 7: Add to Cache ---
     # if analysis_result.analysis_source != "error": # Don't cache errors
     #    _add_to_cache(incident, analysis_result)
 
     # --- Finalize ---
-    # Update analysis_source based on parsing success/failure later
-    if not analysis_result.errors:
-        analysis_result.analysis_source = "llm" # Tentative source, assuming parsing works
-    else:
-        analysis_result.analysis_source = "error"
-        
+    # Analysis source is now set based on parsing success/failure
     end_time = datetime.datetime.now()
     analysis_result.processing_time_seconds = (end_time - start_time).total_seconds()
     if analysis_result.analysis_source != "error":
@@ -213,29 +210,70 @@ async def analyze_incident(incident: IncidentReport) -> AnalysisResult:
 
 # --- Placeholder/TODO functions --- 
 
-# def _parse_llm_response(response: str) -> Optional[LLMStructuredResponse]:
-#     # Implementation to parse the JSON from the LLM response string
-#     # Handle JSON decoding errors, missing keys, etc.
-#     logger.info("Parsing LLM response...")
-#     try:
-#         # Attempt to extract JSON part (e.g., if LLM adds extra text)
-#         # More robust extraction might be needed
-#         start_index = response.find('{')
-#         end_index = response.rfind('}')
-#         if start_index != -1 and end_index != -1 and start_index < end_index:
-#             json_str = response[start_index:end_index+1]
-#             data = json.loads(json_str)
-#             return LLMStructuredResponse(**data)
-#         else:
-#             logger.warning("Could not find JSON object delimiters {{{}}} in LLM response.")
-#             return None
-#     except json.JSONDecodeError as e:
-#         logger.error(f"Failed to parse JSON from LLM response: {e}", exc_info=True)
-#         return None
-#     except Exception as e:
-#         # Could be pydantic.ValidationError or other issues
-#         logger.error(f"Error validating parsed LLM response: {e}", exc_info=True)
-#         return None
+def _parse_llm_response(response: str, errors_list: list) -> Optional[LLMStructuredResponse]:
+    """Parses the raw LLM response string to extract the structured JSON data.
+
+    Attempts to find a JSON object within the response, parse it, and
+    validate it against the LLMStructuredResponse model.
+    Handles JSON potentially wrapped in markdown code fences.
+
+    Args:
+        response: The raw text response from the LLM service.
+        errors_list: A list to append error messages to if parsing fails.
+
+    Returns:
+        An LLMStructuredResponse object if parsing and validation are successful,
+        otherwise None.
+    """
+    logger.info("Attempting to parse LLM response...")
+    if not response:
+        error_msg = "LLM response was empty."
+        logger.warning(error_msg)
+        errors_list.append(error_msg)
+        return None
+
+    json_str = None
+    try:
+        # Priority 1: Look for ```json ... ``` block
+        json_markdown_match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL | re.IGNORECASE)
+        if json_markdown_match:
+            json_str = json_markdown_match.group(1) # Extract content within the braces
+            logger.debug("Extracted JSON from markdown block.")
+        else:
+            # Priority 2: Look for the first { ... } block (non-greedy)
+            # This is less reliable if multiple JSON objects exist in the response
+            first_json_match = re.search(r'(\{.*?\})', response, re.DOTALL)
+            if first_json_match:
+                json_str = first_json_match.group(1)
+                logger.debug("Extracted first JSON block found (non-greedy).")
+
+        if json_str:
+            logger.debug(f"Extracted JSON string: {json_str[:200]}...")
+            
+            # Parse the extracted JSON string
+            data = json.loads(json_str)
+            
+            # Validate the parsed data against the Pydantic model
+            parsed_obj = LLMStructuredResponse(**data)
+            logger.info("Successfully parsed and validated LLM response.")
+            return parsed_obj
+        else:
+            error_msg = "Could not find JSON object structure in LLM response."
+            logger.warning(f"{error_msg} Raw response: {response[:500]}...")
+            errors_list.append(error_msg)
+            return None
+            
+    except json.JSONDecodeError as e:
+        error_msg = f"Failed to decode extracted JSON string [len={len(json_str) if json_str else 0}]: {e}"
+        logger.error(f"{error_msg} - Extracted string: {json_str[:500]}...", exc_info=True)
+        errors_list.append(error_msg)
+        return None
+    except Exception as e:
+        # Catches Pydantic's ValidationError and other unexpected errors
+        error_msg = f"Error validating parsed LLM response data: {e}"
+        logger.error(error_msg, exc_info=True)
+        errors_list.append(error_msg)
+        return None
 
 # def _calculate_confidence(parsed_data: Optional[LLMStructuredResponse], raw_response: str) -> Optional[float]:
 #     # Implementation to calculate confidence score (0.0 - 1.0)
