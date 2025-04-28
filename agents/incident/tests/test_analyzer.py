@@ -5,12 +5,13 @@ from freezegun import freeze_time
 from pytest_httpx import HTTPXMock # Import the mocker
 
 # Use absolute imports from the project root
-from agents.incident.models import IncidentReport, LLMStructuredResponse
+from agents.incident.models import IncidentReport, LLMStructuredResponse, ActionableInsight
 from agents.incident.analyzer import (
     _create_llm_prompt, 
     _call_llm_service, 
     _parse_llm_response,
     _calculate_confidence,
+    _extract_insights,
     LLM_SERVICE_URL
 )
 
@@ -391,3 +392,86 @@ def test_calculate_confidence_max_score(full_parsed_data: LLMStructuredResponse)
     # This test uses the same data as full_success, just confirms the cap explicitly
     score = _calculate_confidence(full_parsed_data, "some raw response") 
     assert score <= 1.0 
+
+# --- Tests for _extract_insights ---
+
+@pytest.fixture
+def parsed_data_for_insights() -> LLMStructuredResponse:
+    """Provides parsed data with various actions for insight extraction tests."""
+    return LLMStructuredResponse(
+        potential_root_causes=["Some cause"],
+        recommended_actions=[
+            "Please check the logs on server DB01 carefully.",
+            "Restart the primary application service.",
+            "Review and configure the timeout setting.",
+            "Update the internal KB article #456 with resolution steps.",
+            "Escalate to the database team if the issue persists.",
+            "Monitor system performance closely for the next hour.",
+            "Verify that the connection pool is healthy.",
+            "Perform a routine system check.", # Should default to investigate
+            "notify the network team"
+        ],
+        potential_impact="High",
+        confidence_explanation="Based on analysis."
+    )
+
+INCIDENT_ID_FOR_INSIGHTS = "INC-INS-001"
+
+def test_extract_insights_empty_actions():
+    """Tests insight extraction when there are no recommended actions."""
+    parsed_data = LLMStructuredResponse(potential_root_causes=[], recommended_actions=[])
+    insights = _extract_insights(parsed_data, INCIDENT_ID_FOR_INSIGHTS)
+    assert insights == []
+
+def test_extract_insights_no_parsed_data():
+    """Tests insight extraction when the recommended_actions list is missing or None."""
+    # Scenario 1: recommended_actions is explicitly None (should default to empty list in model, but test robustness of function)
+    # We need to handle the case where the list *within* a valid object might be empty or None if models change
+    # Create a valid object first, then simulate missing actions if possible
+    parsed_data_no_actions = LLMStructuredResponse(potential_root_causes=["X"], recommended_actions=[])
+    parsed_data_no_actions.recommended_actions = None # Simulate it being None *after* creation if allowed by model flexibility (though current model requires list)
+    
+    # Test the function's handling if actions is None
+    insights_none = _extract_insights(parsed_data_no_actions, INCIDENT_ID_FOR_INSIGHTS)
+    assert insights_none == []
+    
+    # Scenario 2: recommended_actions is an empty list
+    parsed_data_empty_actions = LLMStructuredResponse(potential_root_causes=["X"], recommended_actions=[])
+    insights_empty = _extract_insights(parsed_data_empty_actions, INCIDENT_ID_FOR_INSIGHTS)
+    assert insights_empty == []
+
+def test_extract_insights_classifies_types(parsed_data_for_insights):
+    """Tests that different action types are correctly classified."""
+    insights = _extract_insights(parsed_data_for_insights, INCIDENT_ID_FOR_INSIGHTS)
+    assert len(insights) == 9
+    
+    # Check classifications based on keywords
+    assert insights[0].type == "investigate" # check logs
+    assert insights[1].type == "restart"     # Restart
+    assert insights[2].type == "configure"   # configure
+    assert insights[3].type == "update_doc"  # Update kb
+    assert insights[4].type == "escalate"    # Escalate
+    assert insights[5].type == "monitor"     # Monitor
+    assert insights[6].type == "verify"      # Verify
+    assert insights[7].type == "investigate" # Default
+    assert insights[8].type == "escalate"    # notify
+
+def test_extract_insights_preserves_description(parsed_data_for_insights):
+    """Tests that the original action description is preserved."""
+    insights = _extract_insights(parsed_data_for_insights, INCIDENT_ID_FOR_INSIGHTS)
+    assert insights[0].description == parsed_data_for_insights.recommended_actions[0]
+    assert insights[1].description == parsed_data_for_insights.recommended_actions[1]
+    # ... and so on for others
+
+def test_extract_insights_generates_ids(parsed_data_for_insights):
+    """Tests that unique insight IDs are generated correctly."""
+    insights = _extract_insights(parsed_data_for_insights, INCIDENT_ID_FOR_INSIGHTS)
+    assert insights[0].insight_id == f"{INCIDENT_ID_FOR_INSIGHTS}-insight-1"
+    assert insights[1].insight_id == f"{INCIDENT_ID_FOR_INSIGHTS}-insight-2"
+    assert insights[8].insight_id == f"{INCIDENT_ID_FOR_INSIGHTS}-insight-9"
+
+def test_extract_insights_target_is_none(parsed_data_for_insights):
+    """Tests that the target field is currently always None."""
+    insights = _extract_insights(parsed_data_for_insights, INCIDENT_ID_FOR_INSIGHTS)
+    for insight in insights:
+        assert insight.target is None 

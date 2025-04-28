@@ -1,6 +1,6 @@
 import datetime
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import json
 import httpx # Added for making HTTP requests
 import re # Added for regular expression matching
@@ -184,15 +184,17 @@ async def analyze_incident(incident: IncidentReport) -> AnalysisResult:
         # Proceed even if parsing fails, to calculate a low confidence score
 
     # --- Step 5: Calculate Confidence Score --- 
-    # Pass both parsed_data (can be None) and the original raw response
     analysis_result.confidence_score = _calculate_confidence(
         parsed_data, 
-        llm_raw_response if llm_raw_response else "" # Ensure raw_response is not None
+        llm_raw_response if llm_raw_response else ""
     )
 
-    # --- TODO: Step 6: Extract Actionable Insights --- 
-    # if analysis_result.parsed_response:
-    #     analysis_result.actionable_insights = _extract_insights(analysis_result.parsed_response, incident.incident_id)
+    # --- Step 6: Extract Actionable Insights --- 
+    if analysis_result.parsed_response:
+        analysis_result.actionable_insights = _extract_insights(
+            analysis_result.parsed_response, 
+            incident.incident_id # Pass incident_id for linking insights
+        )
 
     # --- TODO: Step 7: Add to Cache ---
     # if analysis_result.analysis_source != "error": # Don't cache errors
@@ -315,39 +317,64 @@ def _calculate_confidence(parsed_data: Optional[LLMStructuredResponse], raw_resp
     logger.info(f"Calculated confidence score: {final_score:.2f}")
     return final_score
 
-# def _extract_insights(parsed_data: LLMStructuredResponse, incident_id: str) -> List[ActionableInsight]:
-#     # Implementation to identify actionable steps from recommended_actions
-#     logger.info("Extracting actionable insights...")
-#     insights = []
-#     if not parsed_data or not parsed_data.recommended_actions:
-#         return []
+def _extract_insights(parsed_data: LLMStructuredResponse, incident_id: str) -> List[ActionableInsight]:
+    """Extracts actionable insights from the LLM's recommended actions.
+    
+    Performs basic keyword matching to categorize actions.
+
+    Args:
+        parsed_data: The validated structured response from the LLM.
+        incident_id: The ID of the incident for linking insights.
+
+    Returns:
+        A list of ActionableInsight objects.
+    """
+    logger.info("Extracting actionable insights...")
+    insights = []
+    if not parsed_data or not parsed_data.recommended_actions:
+        logger.warning("No recommended actions found to extract insights from.")
+        return []
         
-#     for i, action in enumerate(parsed_data.recommended_actions):
-#         # Basic example: Treat every recommended action as an insight
-#         # More sophisticated logic could involve pattern matching (e.g., "Check logs on server X", "Update KB article Y")
-#         insight_type = "investigate" # Default type
-#         target = None
-#         # Example pattern matching (very basic)
-#         action_lower = action.lower()
-#         if "check logs" in action_lower or "review logs" in action_lower:
-#             insight_type = "investigate"
-#             # Try to extract target (e.g., server name)
-#         elif "update" in action_lower and ("kb" in action_lower or "doc" in action_lower):
-#             insight_type = "update_doc"
-#         elif "configure" in action_lower or "change setting" in action_lower:
-#             insight_type = "configure"
-#         elif "restart" in action_lower or "reboot" in action_lower:
-#              insight_type = "restart"
-#         elif "escalate" in action_lower:
-#             insight_type = "escalate"
-            
-#         insights.append(ActionableInsight(
-#             insight_id=f"{incident_id}-insight-{i+1}", # Link insight to incident
-#             description=action,
-#             type=insight_type,
-#             target=target # Placeholder for extracted target
-#         ))
-#     return insights
+    for i, action in enumerate(parsed_data.recommended_actions):
+        insight_type = "investigate" # Default type
+        target = None # Placeholder for target extraction (future enhancement)
+        action_lower = action.lower()
+        
+        # Basic keyword-based classification
+        if "check logs" in action_lower or "review logs" in action_lower or "examine logs" in action_lower:
+            insight_type = "investigate"
+            # TODO: Attempt to extract target (e.g., server name, log file)
+        elif "update" in action_lower and ("kb" in action_lower or "doc" in action_lower or "knowledge base" in action_lower):
+            insight_type = "update_doc"
+            # TODO: Attempt to extract target (e.g., KB article ID)
+        elif "configure" in action_lower or "change setting" in action_lower or "adjust parameter" in action_lower:
+            insight_type = "configure"
+            # TODO: Attempt to extract target (e.g., system/setting name)
+        elif "restart" in action_lower or "reboot" in action_lower or "recycle" in action_lower:
+             insight_type = "restart"
+             # TODO: Attempt to extract target (e.g., service/server name)
+        elif "escalate" in action_lower or "notify" in action_lower:
+            insight_type = "escalate"
+            # TODO: Attempt to extract target (e.g., team/person)
+        elif "monitor" in action_lower or "observe" in action_lower:
+            insight_type = "monitor"
+            # TODO: Attempt to extract target (e.g., metric/system)
+        elif "verify" in action_lower or "confirm" in action_lower or "check status" in action_lower:
+             insight_type = "verify"
+             # TODO: Attempt to extract target
+             
+        insight = ActionableInsight(
+            # Create a unique ID for the insight based on incident and action index
+            insight_id=f"{incident_id}-insight-{i+1}", 
+            description=action, # Keep the original recommendation text
+            type=insight_type,
+            target=target # Currently None
+        )
+        insights.append(insight)
+        logger.debug(f"Extracted insight: Type='{insight.type}', Description='{insight.description[:50]}...'")
+
+    logger.info(f"Extracted {len(insights)} actionable insights.")
+    return insights
 
 # --- Cache Functions (Example using simple dict, recommend SQLite/TinyDB for persistence) --- 
 # incident_cache: Dict[str, CacheEntry] = {}

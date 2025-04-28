@@ -15,24 +15,25 @@ This agent analyzes incident reports to provide structured insights, potential c
 *   **Core Files:**
     *   `models.py`: Defines Pydantic models for input (`IncidentReport`), expected LLM output (`LLMStructuredResponse`), actionable steps (`ActionableInsight`), final agent output (`AnalysisResult`), and cache structure (`CacheEntry`).
     *   `analyzer.py`: Contains the core analysis logic.
-        *   `_create_llm_prompt()`: Generates a detailed prompt for the LLM Service, requesting a specific JSON structure.
-        *   `_call_llm_service()`: Sends the prompt to the LLM Service API using `httpx` and handles basic errors.
-        *   `_parse_llm_response()`: Extracts, parses, and validates JSON from the raw LLM response, handling various error cases.
+        *   `_create_llm_prompt()`: Generates a detailed prompt for the LLM Service.
+        *   `_call_llm_service()`: Sends the prompt to the LLM Service API.
+        *   `_parse_llm_response()`: Extracts, parses, and validates JSON from the raw LLM response.
         *   `_calculate_confidence()`: Calculates a confidence score based on parsing success and field completeness.
-        *   `analyze_incident()`: Orchestrates the analysis process (async function), including prompt generation, LLM call, and response parsing.
-        *   Placeholder functions for insight extraction and caching.
-    *   `tests/test_analyzer.py`: Contains unit tests (`pytest`) for the analyzer functions (`_create_llm_prompt`, `_call_llm_service`, `_parse_llm_response`, `_calculate_confidence`). Uses `pytest-asyncio` for async tests and `pytest-httpx` for mocking HTTP calls.
+        *   `_extract_insights()`: Converts recommended action strings into structured `ActionableInsight` objects with basic type classification.
+        *   `analyze_incident()`: Orchestrates the analysis process (async function), including prompt generation, LLM call, response parsing, confidence scoring, and insight extraction.
+        *   Placeholder functions for caching.
+    *   `tests/test_analyzer.py`: Contains unit tests (`pytest`) for the analyzer functions (`_create_llm_prompt`, `_call_llm_service`, `_parse_llm_response`, `_calculate_confidence`, `_extract_insights`). Uses `pytest-asyncio` and `pytest-httpx`.
 *   **Dependencies:** `pydantic`, `httpx`, `pytest`, `freezegun`, `pytest-httpx`, `pytest-asyncio`.
 
 ## Analysis Workflow (Current & Planned)
 
 1.  **Receive `IncidentReport`**: Agent entry point takes incident data (potentially routed from the MCP).
 2.  **(TODO) Cache Check**: Look for similar incidents in a local cache.
-3.  **Prompt Generation**: Format the incident data into a structured prompt using `_create_llm_prompt`.
-4.  **LLM Call**: Send the prompt to the LLM Service (`/generate` endpoint) using `_call_llm_service`.
-5.  **Response Parsing**: Receive the raw text response. Extract and validate JSON using `_parse_llm_response`. Handle errors gracefully.
-6.  **Confidence Scoring**: Evaluate the quality/reliability of the parsed response using `_calculate_confidence`.
-7.  **(TODO) Insight Extraction**: Identify actionable steps (`ActionableInsight`) from the recommendations.
+3.  **Prompt Generation**: Format the incident data into a structured prompt.
+4.  **LLM Call**: Send the prompt to the LLM Service.
+5.  **Response Parsing**: Receive the raw text response. Extract and validate JSON.
+6.  **Confidence Scoring**: Evaluate the quality/reliability of the parsed response.
+7.  **Insight Extraction**: Identify and structure actionable steps (`ActionableInsight`) from the recommendations using `_extract_insights`.
 8.  **(TODO) Caching**: Store the `AnalysisResult` in the cache.
 9.  **Return `AnalysisResult`**: Send back the final structured analysis (potentially to the MCP).
 
@@ -49,6 +50,7 @@ This agent analyzes incident reports to provide structured insights, potential c
 *   LLM Service call logic implemented and unit tested (using HTTP mocking).
 *   Response parsing logic implemented and unit tested.
 *   Confidence scoring logic implemented and unit tested.
-*   Main analysis function includes prompt generation, LLM call, and parsing steps.
-*   Placeholders remain for insight extraction and caching.
+*   Basic insight extraction logic implemented and unit tested.
+*   Main analysis function includes prompt gen, LLM call, parsing, scoring, and insight extraction.
+*   Placeholder remains for caching.
 *   Required dependencies added. 
