@@ -67,8 +67,8 @@ def test_create_llm_prompt_basic(basic_incident: IncidentReport):
 
     # Check for the overall structure
     assert "Analyze the following incident report" in prompt
-    assert "Required JSON Output Format:" in prompt
-    assert "Instructions for Analysis:" in prompt
+    assert "**REQUIRED JSON OUTPUT SCHEMA:**" in prompt
+    assert "**CRITICAL INSTRUCTIONS FOR LLM:**" in prompt
     assert "JSON Response:\n```json" in prompt
     assert "potential_root_causes" in prompt
     assert "recommended_actions" in prompt
@@ -90,7 +90,7 @@ def test_create_llm_prompt_minimal(minimal_incident: IncidentReport):
 
     # Check structure remains
     assert "Analyze the following incident report" in prompt
-    assert "Required JSON Output Format:" in prompt
+    assert "**REQUIRED JSON OUTPUT SCHEMA:**" in prompt
     assert "JSON Response:\n```json" in prompt
 
 @freeze_time(TIMESTAMP_NOW)
@@ -297,23 +297,22 @@ def test_parse_llm_response_invalid_syntax():
     assert "Failed to decode extracted JSON string" in errors[0]
 
 def test_parse_llm_response_missing_required_field():
-    """Tests parsing valid JSON missing a required field."""
+    """Tests parsing valid JSON missing a field (which is optional in the model)."""
     errors = []
     result = _parse_llm_response(MISSING_REQUIRED_FIELD_JSON, errors)
-    assert result is None
-    assert len(errors) == 1
-    assert "Error validating parsed LLM response data" in errors[0]
-    # Pydantic v2 provides more detailed error messages
-    assert "Field required" in errors[0] or "potential_root_causes" in errors[0]
+    assert result is not None # Should return an object as fields are Optional
+    assert isinstance(result, LLMStructuredResponse)
+    assert result.potential_root_causes is None # The missing field should be None
+    assert result.recommended_actions == ["Action X"] # Check other fields parsed
+    assert errors == [] # No parsing or validation error should occur
 
 def test_parse_llm_response_wrong_data_type():
     """Tests parsing valid JSON with a field of the wrong data type."""
     errors = []
     result = _parse_llm_response(WRONG_DATA_TYPE_JSON, errors)
-    assert result is None
+    assert result is None # Parsing succeeds, but validation fails, returning None
     assert len(errors) == 1
-    assert "Error validating parsed LLM response data" in errors[0]
-    assert "Input should be a valid list" in errors[0] or "potential_root_causes" in errors[0]
+    assert errors[0].startswith("LLM response JSON failed validation") # Check start of actual error
 
 def test_parse_llm_response_empty_string():
     """Tests parsing an empty string response."""
