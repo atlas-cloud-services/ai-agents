@@ -32,12 +32,19 @@ Follow the conventional commit format:
 ## Testing
 
 *   Test-Driven Development (TDD) is encouraged where practical.
-*   Write unit tests using `pytest`.
+*   Write unit tests using `pytest` for individual functions and classes.
+*   Write integration/end-to-end (E2E) tests using `pytest` and `httpx` (with `pytest-httpx` for mocking) to test API endpoints and interactions between components (while mocking external services like the LLM).
 *   Place tests in a `tests/` subdirectory within the component being tested (e.g., `agents/incident/tests/`).
+*   Use separate files for unit tests (e.g., `test_analyzer.py`) and E2E tests (e.g., `test_incident_agent_e2e.py`).
 *   Ensure tests cover core logic, edge cases, and error handling.
-*   Run tests from the project root directory:
+*   Run all tests from the project root directory:
     ```bash
     pytest
+    ```
+*   Run tests for a specific component or file:
+    ```bash
+    pytest agents/incident/
+    pytest tests/test_incident_agent_e2e.py
     ```
 
 ## Pull Requests (PRs)

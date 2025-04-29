@@ -13,48 +13,64 @@ This agent analyzes incident reports to provide structured insights, potential c
 
 *   **Location:** `agents/incident/`
 *   **Core Files:**
+    *   `main.py`: FastAPI application providing the `/analyze` endpoint and handling startup (DB init, MCP registration).
     *   `models.py`: Defines Pydantic models for input (`IncidentReport`), expected LLM output (`LLMStructuredResponse`), actionable steps (`ActionableInsight`), final agent output (`AnalysisResult`), and cache structure (`CacheEntry`).
-    *   `analyzer.py`: Contains the core analysis logic.
-        *   `_init_cache_db()`: Initializes the SQLite cache database (`incident_cache.db`).
-        *   `_get_incident_summary()`: Generates an MD5 hash of the incident description for caching.
-        *   `_check_cache()`: Checks the SQLite cache for existing results based on the summary hash.
-        *   `_add_to_cache()`: Adds successful analysis results to the SQLite cache.
-        *   `_create_llm_prompt()`: Generates a detailed prompt for the LLM Service.
-        *   `_call_llm_service()`: Sends the prompt to the LLM Service API.
-        *   `_parse_llm_response()`: Extracts, parses, and validates JSON from the raw LLM response.
-        *   `_calculate_confidence()`: Calculates a confidence score based on parsing success and field completeness.
-        *   `_extract_insights()`: Converts recommended action strings into structured `ActionableInsight` objects.
-        *   `analyze_incident()`: Orchestrates the full analysis process (async function), including caching, prompt generation, LLM call, response parsing, confidence scoring, and insight extraction.
-    *   `tests/test_analyzer.py`: Contains unit tests (`pytest`) for the analyzer functions, including caching logic tested against an in-memory SQLite DB.
-*   **Dependencies:** `pydantic`, `httpx`, `pytest`, `freezegun`, `pytest-httpx`, `pytest-asyncio`.
-*   **Data:** `incident_cache.db` (SQLite file created on first run if caching is active).
+    *   `analyzer.py`: Contains the core analysis logic (`analyze_incident` function and helpers for caching, LLM interaction, parsing, scoring, insights).
+    *   `tests/test_analyzer.py`: Contains unit tests (`pytest`) for the `analyzer.py` functions.
+    *   `tests/test_incident_agent_e2e.py`: Contains end-to-end tests (`pytest`) for the `/analyze` API endpoint, mocking external dependencies.
+*   **Dependencies:** `fastapi`, `uvicorn`, `pydantic`, `httpx`, `pytest`, `freezegun`, `pytest-httpx`, `pytest-asyncio`.
+*   **Data:** `incident_cache.db` (SQLite file created in the working directory on first run if caching is active).
 
-## Analysis Workflow
+## Analysis Workflow (via `/analyze` endpoint)
 
-1.  **Receive `IncidentReport`**: Agent entry point takes incident data.
-2.  **Cache Check**: Generate incident summary hash. Check SQLite cache (`_check_cache`). If hit, return cached `AnalysisResult` (updating timestamp/source).
-3.  **Prompt Generation**: If cache miss, format the incident data into a structured prompt.
-4.  **LLM Call**: Send the prompt to the LLM Service.
-5.  **Response Parsing**: Receive the raw text response. Extract and validate JSON.
-6.  **Confidence Scoring**: Evaluate the quality/reliability of the parsed response.
-7.  **Insight Extraction**: Identify and structure actionable steps (`ActionableInsight`).
-8.  **Caching**: If analysis was successful (not source='error'), add the `AnalysisResult` to the SQLite cache (`_add_to_cache`).
-9.  **Return `AnalysisResult`**: Send back the final structured analysis (from cache or new analysis).
+1.  **Receive `IncidentReport`**: API receives POST request with incident data.
+2.  **Delegate to `analyze_incident`**: The endpoint calls the core analysis function.
+3.  **Cache Check**: Generate incident summary hash. Check SQLite cache (`_check_cache`). If hit, return cached `AnalysisResult` (updating timestamp/source).
+4.  **Prompt Generation**: If cache miss, format the incident data into a structured prompt.
+5.  **LLM Call**: Send the prompt to the LLM Service (`_call_llm_service`).
+6.  **Response Parsing**: Receive the raw text response. Extract and validate JSON (`_parse_llm_response`).
+7.  **Confidence Scoring**: Evaluate the quality/reliability of the parsed response (`_calculate_confidence`).
+8.  **Insight Extraction**: Identify and structure actionable steps (`ActionableInsight`) (`_extract_insights`).
+9.  **Caching**: If analysis was successful (not source='error'), add the `AnalysisResult` to the SQLite cache (`_add_to_cache`).
+10. **Return `AnalysisResult`**: Send back the final structured analysis (from cache or new analysis) as the API response.
 
 ## How to Run/Test
 
-*   The agent logic is currently tested via `pytest`.
-*   Run tests from the project root: `pytest`
-*   (Future) An API endpoint or direct invocation via the **Master Control Program (MCP)** will trigger the agent.
+*   **Unit Tests:**
+    *   Run from the project root: `pytest tests/test_analyzer.py`
+*   **End-to-End Tests (Recommended):**
+    *   These test the API endpoint logic by mocking external services (LLM).
+    *   Run from the project root: `pytest tests/test_incident_agent_e2e.py`
+*   **Running the Service:**
+    *   Ensure the LLM Service (and optionally MCP) is running on its configured port (default: 8001).
+    *   Activate the virtual environment: `source venv/bin/activate`
+    *   From the project root (`ACS-AI-AGENTS`), run: 
+        ```bash
+        python3 -m uvicorn agents.incident.main:app --reload --port 8003
+        ```
+    *   Access the API docs at `http://127.0.0.1:8003/docs`.
+    *   Send POST requests to `http://127.0.0.1:8003/analyze` with an `IncidentReport` JSON body.
 
 ## Current Status (as of YYYY-MM-DD)
 
 *   Core data models defined.
-*   Prompt generation logic implemented and unit tested.
-*   LLM Service call logic implemented and unit tested (using HTTP mocking).
-*   Response parsing logic implemented and unit tested.
-*   Confidence scoring logic implemented and unit tested.
-*   Basic insight extraction logic implemented and unit tested.
-*   SQLite-based caching mechanism implemented and unit tested.
-*   Main analysis function includes all steps: caching, prompt gen, LLM call, parsing, scoring, insight extraction, cache update.
-*   Required dependencies added. 
+*   FastAPI endpoint (`/analyze`) implemented.
+*   Core analysis logic (`analyzer.py`) implemented and unit tested.
+    *   Prompt generation.
+    *   LLM Service interaction (via `httpx`).
+    *   Response parsing (handling markdown, flexible model validation).
+    *   Confidence scoring.
+    *   Actionable insight extraction.
+    *   SQLite-based caching.
+*   End-to-end API tests implemented (mocking LLM).
+*   Basic MCP registration on startup implemented.
+*   Required dependencies added.
+
+## Future Enhancements / TODO
+
+*   Address `DeprecationWarning` for FastAPI `on_event` and `httpx` client usage.
+*   Implement more sophisticated insight extraction (e.g., extracting targets).
+*   Refine confidence scoring logic.
+*   Consider more advanced caching strategies (e.g., semantic similarity, expiry).
+*   Improve robustness of MCP registration/communication.
+*   Add detailed logging configuration. 
