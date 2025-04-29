@@ -6,22 +6,25 @@ import httpx # Added for making HTTP requests
 import re # Added for regular expression matching
 import sqlite3 # Added for SQLite database
 import hashlib # Added for creating incident summary hash
+from pydantic import ValidationError # Added for specific error catching
 
 from .models import IncidentReport, AnalysisResult, LLMStructuredResponse, ActionableInsight, CacheEntry # Added CacheEntry
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+# --- Force DEBUG level for this specific module --- 
+logger.setLevel(logging.DEBUG)
 
 # Configuration for the LLM Service
 LLM_SERVICE_URL = "http://127.0.0.1:8001/generate"
-LLM_REQUEST_TIMEOUT = 60.0 # Timeout in seconds for the LLM call
+LLM_REQUEST_TIMEOUT = 120.0 # Increased from 60.0
 
 # Configuration for Cache
 CACHE_DB_PATH = "incident_cache.db"
 
 PROMPT_TEMPLATE = """
-Analyze the following incident report and provide a structured JSON response.
+Analyze the following incident report and provide ONLY a valid, structured JSON response adhering strictly to the schema below.
 
 Incident Details:
 ID: {incident_id}
@@ -34,28 +37,31 @@ Description:
 {description}
 ```
 
-Required JSON Output Format:
+**REQUIRED JSON OUTPUT SCHEMA:**
 ```json
 {{
   "potential_root_causes": [
-    "Cause 1 description...",
-    "Cause 2 description..."
+    "String describing cause 1...",
+    "String describing cause 2..."
   ],
   "recommended_actions": [
-    "Action 1 description...",
-    "Action 2 description..."
+    "String describing action 1...",
+    "String describing action 2..."
   ],
-  "potential_impact": "Description of potential impact...",
-  "confidence_explanation": "Explanation of why the analysis is confident/uncertain..."
+  "potential_impact": "String describing potential impact...",
+  "confidence_explanation": "String explaining analysis confidence..."
 }}
 ```
 
-Instructions for Analysis:
-1. Identify the most likely root causes based *only* on the provided description.
-2. Suggest concrete, actionable steps to investigate and resolve the issue.
-3. Briefly describe the potential impact if the incident is not addressed.
-4. Explain the reasoning behind your confidence in this analysis. Be specific about ambiguities or assumptions.
-5. Ensure the output strictly adheres to the JSON format specified above. Do not include any text outside the JSON structure.
+**CRITICAL INSTRUCTIONS FOR LLM:**
+1. Identify the most likely root causes based *only* on the provided description. List them as **simple strings** in the `potential_root_causes` array.
+2. Suggest concrete, actionable steps. List them as **simple strings** in the `recommended_actions` array.
+3. Briefly describe the potential impact as a **single string**.
+4. Explain your confidence reasoning as a **single string**.
+5. **DO NOT** nest JSON objects within the `potential_root_causes` or `recommended_actions` arrays.
+6. **DO NOT** include any text, comments, or markdown outside the single ```json ... ``` block.
+7. **DO NOT** add duplicate keys.
+8. Ensure the final output is **syntactically valid JSON** parsable by standard libraries.
 
 JSON Response:
 ```json
@@ -270,6 +276,9 @@ def _parse_llm_response(response: str, errors_list: list) -> Optional[LLMStructu
         otherwise None.
     """
     logger.info("Attempting to parse LLM response...")
+    # --- DEBUG LOGGING START ---
+    logger.debug(f"_parse_llm_response received raw response (len={len(response)}):\n---START RAW---\n{response}\n---END RAW---")
+    # --- DEBUG LOGGING END ---
     if not response:
         error_msg = "LLM response was empty."
         logger.warning(error_msg)
@@ -278,18 +287,24 @@ def _parse_llm_response(response: str, errors_list: list) -> Optional[LLMStructu
 
     json_str = None
     try:
-        # Priority 1: Look for ```json ... ``` block
-        json_markdown_match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL | re.IGNORECASE)
+        # Priority 1: Look for ```json ... ``` block and extract content within {}
+        json_markdown_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response, re.DOTALL | re.IGNORECASE)
         if json_markdown_match:
-            json_str = json_markdown_match.group(1) # Extract content within the braces
-            logger.debug("Extracted JSON from markdown block.")
+            json_str = json_markdown_match.group(1)
+            logger.debug("Regex Priority 1 (Markdown Block) MATCHED.")
         else:
+            logger.debug("Regex Priority 1 (Markdown Block) DID NOT MATCH.")
             # Priority 2: Look for the first { ... } block (non-greedy)
-            # This is less reliable if multiple JSON objects exist in the response
             first_json_match = re.search(r'(\{.*?\})', response, re.DOTALL)
             if first_json_match:
                 json_str = first_json_match.group(1)
-                logger.debug("Extracted first JSON block found (non-greedy).")
+                logger.debug("Regex Priority 2 (First Block) MATCHED.")
+            else:
+                logger.debug("Regex Priority 2 (First Block) DID NOT MATCH.")
+
+        # --- DEBUG LOGGING START ---
+        logger.debug(f"Value of json_str BEFORE validation: {'None' if json_str is None else json_str[:500] + '...'}")
+        # --- DEBUG LOGGING END ---
 
         if json_str:
             logger.debug(f"Extracted JSON string: {json_str[:200]}...")
@@ -299,11 +314,11 @@ def _parse_llm_response(response: str, errors_list: list) -> Optional[LLMStructu
             
             # Validate the parsed data against the Pydantic model
             parsed_obj = LLMStructuredResponse(**data)
-            logger.info("Successfully parsed and validated LLM response.")
+            logger.info("Successfully parsed and validated LLM response against flexible model.")
             return parsed_obj
         else:
             error_msg = "Could not find JSON object structure in LLM response."
-            logger.warning(f"{error_msg} Raw response: {response[:500]}...")
+            logger.warning(f"{error_msg} Raw response snippet: {response[:500]}...") # Log snippet here too
             errors_list.append(error_msg)
             return None
             
@@ -312,16 +327,21 @@ def _parse_llm_response(response: str, errors_list: list) -> Optional[LLMStructu
         logger.error(f"{error_msg} - Extracted string: {json_str[:500]}...", exc_info=True)
         errors_list.append(error_msg)
         return None
+    except ValidationError as e:
+        error_msg = f"LLM response JSON failed validation against flexible model: {e}"
+        logger.error(error_msg, exc_info=True)
+        errors_list.append(error_msg)
+        # Return None even if validation fails, as per previous logic. We might try partial parsing later.
+        return None
     except Exception as e:
-        # Catches Pydantic's ValidationError and other unexpected errors
-        error_msg = f"Error validating parsed LLM response data: {e}"
+        error_msg = f"Unexpected error during LLM response processing: {e}"
         logger.error(error_msg, exc_info=True)
         errors_list.append(error_msg)
         return None
 
 def _calculate_confidence(parsed_data: Optional[LLMStructuredResponse], raw_response: str) -> float:
     """Calculates a confidence score (0.0 - 1.0) based on parsing success
-    and completeness of the structured response.
+    and completeness of the structured response (handles flexible types).
 
     Args:
         parsed_data: The parsed LLMStructuredResponse object, or None if parsing failed.
@@ -333,20 +353,24 @@ def _calculate_confidence(parsed_data: Optional[LLMStructuredResponse], raw_resp
     logger.info("Calculating confidence score...")
     
     if parsed_data is None:
-        logger.warning("Confidence score is low due to parsing failure.")
-        return 0.1 # Low confidence if parsing failed outright
+        logger.warning("Confidence score is low due to parsing/validation failure.")
+        return 0.1 # Low confidence if parsing or validation failed
     
-    # Start with a base score assuming parsing was successful
+    # Start with a base score assuming parsing/validation was successful
     score = 0.5 
     
     # Increase score based on presence and basic validity of fields
-    if parsed_data.potential_root_causes: # Check if list is not empty
+    # Check if list exists and is not empty
+    if parsed_data.potential_root_causes and isinstance(parsed_data.potential_root_causes, list) and len(parsed_data.potential_root_causes) > 0:
         score += 0.1
-    if parsed_data.recommended_actions: # Check if list is not empty
+    # Check if list exists and is not empty
+    if parsed_data.recommended_actions and isinstance(parsed_data.recommended_actions, list) and len(parsed_data.recommended_actions) > 0:
         score += 0.1
-    if parsed_data.potential_impact and parsed_data.potential_impact.strip(): # Check if not None and not empty/whitespace
+    # Check if field exists, is a string, and not empty/whitespace
+    if parsed_data.potential_impact and isinstance(parsed_data.potential_impact, str) and parsed_data.potential_impact.strip():
         score += 0.1
-    if parsed_data.confidence_explanation and parsed_data.confidence_explanation.strip(): # Check if not None and not empty/whitespace
+    # Check if field exists, is a string, and not empty/whitespace
+    if parsed_data.confidence_explanation and isinstance(parsed_data.confidence_explanation, str) and parsed_data.confidence_explanation.strip():
         score += 0.1
         
     # --- Future Enhancements --- 
@@ -362,6 +386,7 @@ def _extract_insights(parsed_data: LLMStructuredResponse, incident_id: str) -> L
     """Extracts actionable insights from the LLM's recommended actions.
     
     Performs basic keyword matching to categorize actions.
+    Safely handles cases where recommended_actions might contain non-string elements.
 
     Args:
         parsed_data: The validated structured response from the LLM.
@@ -372,49 +397,50 @@ def _extract_insights(parsed_data: LLMStructuredResponse, incident_id: str) -> L
     """
     logger.info("Extracting actionable insights...")
     insights = []
-    if not parsed_data or not parsed_data.recommended_actions:
-        logger.warning("No recommended actions found to extract insights from.")
+    # Check if parsed_data and recommended_actions exist and if recommended_actions is a list
+    if not parsed_data or not parsed_data.recommended_actions or not isinstance(parsed_data.recommended_actions, list):
+        logger.warning("No valid recommended actions list found to extract insights from.")
         return []
         
-    for i, action in enumerate(parsed_data.recommended_actions):
+    action_index = 0
+    for action in parsed_data.recommended_actions:
+        # Ensure the action is a string before processing
+        if not isinstance(action, str):
+            logger.warning(f"Skipping non-string item in recommended_actions: {action}")
+            continue
+
+        action_index += 1 # Increment index only for valid string actions
         insight_type = "investigate" # Default type
         target = None # Placeholder for target extraction (future enhancement)
         action_lower = action.lower()
         
-        # Basic keyword-based classification
+        # Basic keyword-based classification (same as before)
         if "check logs" in action_lower or "review logs" in action_lower or "examine logs" in action_lower:
             insight_type = "investigate"
-            # TODO: Attempt to extract target (e.g., server name, log file)
         elif "update" in action_lower and ("kb" in action_lower or "doc" in action_lower or "knowledge base" in action_lower):
             insight_type = "update_doc"
-            # TODO: Attempt to extract target (e.g., KB article ID)
         elif "configure" in action_lower or "change setting" in action_lower or "adjust parameter" in action_lower:
             insight_type = "configure"
-            # TODO: Attempt to extract target (e.g., system/setting name)
         elif "restart" in action_lower or "reboot" in action_lower or "recycle" in action_lower:
              insight_type = "restart"
-             # TODO: Attempt to extract target (e.g., service/server name)
         elif "escalate" in action_lower or "notify" in action_lower:
             insight_type = "escalate"
-            # TODO: Attempt to extract target (e.g., team/person)
         elif "monitor" in action_lower or "observe" in action_lower:
             insight_type = "monitor"
-            # TODO: Attempt to extract target (e.g., metric/system)
         elif "verify" in action_lower or "confirm" in action_lower or "check status" in action_lower:
              insight_type = "verify"
-             # TODO: Attempt to extract target
              
         insight = ActionableInsight(
-            # Create a unique ID for the insight based on incident and action index
-            insight_id=f"{incident_id}-insight-{i+1}", 
-            description=action, # Keep the original recommendation text
+            # Use the incremented action_index
+            insight_id=f"{incident_id}-insight-{action_index}", 
+            description=action, # Use the original string action
             type=insight_type,
             target=target # Currently None
         )
         insights.append(insight)
         logger.debug(f"Extracted insight: Type='{insight.type}', Description='{insight.description[:50]}...'")
 
-    logger.info(f"Extracted {len(insights)} actionable insights.")
+    logger.info(f"Extracted {len(insights)} actionable insights from string actions.")
     return insights
 
 # --- Cache Functions --- 
@@ -430,30 +456,34 @@ def _check_cache(incident: IncidentReport) -> Optional[AnalysisResult]:
     """
     summary = _get_incident_summary(incident.description)
     logger.info(f"Checking cache for incident summary: {summary}")
+    conn = None # Initialize connection variable
     try:
-        with sqlite3.connect(CACHE_DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT analysis_result_json FROM incident_analysis_cache WHERE incident_summary = ?",
-                (summary,)
-            )
-            row = cursor.fetchone()
-            if row:
-                logger.info(f"Cache hit for incident summary: {summary}")
-                # Deserialize JSON back into AnalysisResult object
-                analysis_result = AnalysisResult.model_validate_json(row[0])
-                return analysis_result
-            else:
-                logger.info(f"Cache miss for incident summary: {summary}")
-                return None
+        conn = sqlite3.connect(CACHE_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT analysis_result_json FROM incident_analysis_cache WHERE incident_summary = ?",
+            (summary,)
+        )
+        row = cursor.fetchone()
+        if row:
+            logger.info(f"Cache hit for incident summary: {summary}")
+            analysis_result = AnalysisResult.model_validate_json(row[0])
+            return analysis_result
+        else:
+            logger.info(f"Cache miss for incident summary: {summary}")
+            return None
     except sqlite3.Error as e:
-        logger.error(f"Error checking cache: {e}", exc_info=True)
+        logger.error(f"SQLite error checking cache (summary: {summary}): {e}", exc_info=True)
+        return None
+    except ValidationError as e:
+        logger.error(f"Failed to validate cached data (summary: {summary}): {e}", exc_info=True)
         return None
     except Exception as e:
-        # Handles Pydantic validation errors during deserialization etc.
-        logger.error(f"Error deserializing cached result: {e}", exc_info=True)
-        # Optional: Could delete the corrupted cache entry here
+        logger.error(f"Unexpected error deserializing cached result (summary: {summary}): {e}", exc_info=True)
         return None
+    finally:
+        if conn: # Ensure connection is closed even if errors occurred
+            conn.close()
 
 def _add_to_cache(incident: IncidentReport, result: AnalysisResult):
     """Adds or updates an analysis result in the cache.
@@ -469,25 +499,25 @@ def _add_to_cache(incident: IncidentReport, result: AnalysisResult):
         return
         
     summary = _get_incident_summary(incident.description)
+    conn = None # Initialize connection variable
     try:
-        # Serialize the AnalysisResult object to JSON string
-        # Use exclude_none=True to potentially save space
         result_json = result.model_dump_json(exclude_none=True)
         
-        with sqlite3.connect(CACHE_DB_PATH) as conn:
-            cursor = conn.cursor()
-            # Use INSERT OR REPLACE to handle updates if the summary already exists
-            cursor.execute("""
-            INSERT OR REPLACE INTO incident_analysis_cache 
-            (incident_summary, analysis_result_json, timestamp)
-            VALUES (?, ?, ?)
-            """, (summary, result_json, datetime.datetime.now()))
-            conn.commit()
-            logger.info(f"Added/Updated analysis result in cache for summary: {summary}")
+        conn = sqlite3.connect(CACHE_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+        INSERT OR REPLACE INTO incident_analysis_cache 
+        (incident_summary, analysis_result_json, timestamp)
+        VALUES (?, ?, ?)
+        """, (summary, result_json, datetime.datetime.now()))
+        conn.commit()
+        logger.info(f"Added/Updated analysis result in cache for summary: {summary}")
     except sqlite3.Error as e:
-        logger.error(f"Error adding to cache: {e}", exc_info=True)
+        logger.error(f"SQLite error adding/updating cache (summary: {summary}): {e}", exc_info=True)
     except Exception as e:
-        # Handles Pydantic serialization errors etc.
-        logger.error(f"Error serializing result for caching: {e}", exc_info=True)
+        logger.error(f"Unexpected error serializing result for caching (summary: {summary}): {e}", exc_info=True)
+    finally:
+        if conn: # Ensure connection is closed even if errors occurred
+            conn.close()
 
 
