@@ -2,17 +2,24 @@ import pytest
 import datetime
 import httpx
 from freezegun import freeze_time
-from pytest_httpx import HTTPXMock # Import the mocker
+from pytest_httpx import HTTPXMock
+import sqlite3
+from unittest import mock
 
 # Use absolute imports from the project root
-from agents.incident.models import IncidentReport, LLMStructuredResponse, ActionableInsight
+from agents.incident.models import IncidentReport, LLMStructuredResponse, ActionableInsight, AnalysisResult
 from agents.incident.analyzer import (
     _create_llm_prompt, 
     _call_llm_service, 
     _parse_llm_response,
     _calculate_confidence,
     _extract_insights,
-    LLM_SERVICE_URL
+    _get_incident_summary,
+    _check_cache,
+    _add_to_cache,
+    _init_cache_db,
+    LLM_SERVICE_URL,
+    CACHE_DB_PATH
 )
 
 # Sample data for testing
@@ -475,3 +482,136 @@ def test_extract_insights_target_is_none(parsed_data_for_insights):
     insights = _extract_insights(parsed_data_for_insights, INCIDENT_ID_FOR_INSIGHTS)
     for insight in insights:
         assert insight.target is None 
+
+# --- Tests for Caching (_check_cache, _add_to_cache) ---
+
+# Use a consistent NAMED path for the mocked in-memory DB during tests
+# mode=memory creates an in-memory DB
+# cache=shared allows multiple connections in the same process to see it
+TEST_DB = "file:test_incident_cache?mode=memory&cache=shared"
+
+@pytest.fixture
+def sample_incident_for_cache() -> IncidentReport:
+    return IncidentReport(incident_id="INC-CACHE-01", description="Network is down in building A.")
+
+@pytest.fixture
+def sample_incident_for_cache_alt() -> IncidentReport:
+    # Same description hash as sample_incident_for_cache, different ID
+    return IncidentReport(incident_id="INC-CACHE-02", description="Network is down in building A.")
+
+@pytest.fixture
+def sample_incident_different() -> IncidentReport:
+    return IncidentReport(incident_id="INC-CACHE-03", description="Database server slow.")
+
+@pytest.fixture
+def sample_analysis_result(sample_incident_for_cache) -> AnalysisResult:
+    return AnalysisResult(
+        incident_id=sample_incident_for_cache.incident_id,
+        analysis_source="llm",
+        confidence_score=0.85,
+        parsed_response=LLMStructuredResponse(
+            potential_root_causes=["Switch failure"],
+            recommended_actions=["Check switch  SWA-01"]
+        ),
+        actionable_insights=[
+            ActionableInsight(insight_id="INC-CACHE-01-insight-1", description="Check switch SWA-01", type="investigate")
+        ]
+    )
+
+@pytest.fixture
+def sample_analysis_result_error(sample_incident_different) -> AnalysisResult:
+    return AnalysisResult(
+        incident_id=sample_incident_different.incident_id,
+        analysis_source="error",
+        errors=["LLM call failed"],
+        confidence_score=0.1 # Low confidence due to error
+    )
+
+@pytest.fixture(autouse=True)
+def setup_test_db(monkeypatch):
+    """Fixture to ensure tests use an in-memory DB and the table exists."""
+    # Patch CACHE_DB_PATH to use in-memory DB for all tests in this module
+    monkeypatch.setattr('agents.incident.analyzer.CACHE_DB_PATH', TEST_DB)
+    
+    # Explicitly initialize the (mocked) database using the patched path
+    # This ensures the table is created using the same logic as the main code,
+    # but directed to the in-memory DB.
+    _init_cache_db() 
+    
+    # Optional: Could add a cleanup step to delete the in-memory db if needed,
+    # but :memory: usually handles this.
+    yield # Let the test run
+    # Cleanup (optional, as :memory: is volatile)
+    try:
+        conn = sqlite3.connect(TEST_DB)
+        conn.execute("DROP TABLE IF EXISTS incident_analysis_cache")
+        conn.commit()
+        conn.close()
+    except sqlite3.Error:
+        pass # Ignore errors during cleanup
+
+def test_get_incident_summary_consistency():
+    """Test that the summary function is consistent and handles basic normalization."""
+    desc1 = "Network is down in building A."
+    desc2 = " network IS down in Building a.  "
+    desc3 = "Database server slow."
+    assert _get_incident_summary(desc1) == _get_incident_summary(desc2)
+    assert _get_incident_summary(desc1) != _get_incident_summary(desc3)
+
+def test_check_cache_miss(sample_incident_different):
+    """Test checking cache for an item that doesn't exist."""
+    result = _check_cache(sample_incident_different)
+    assert result is None
+
+def test_add_to_cache_and_hit(sample_incident_for_cache, sample_analysis_result):
+    """Test adding an item to the cache and then retrieving it."""
+    # 1. Add to cache
+    _add_to_cache(sample_incident_for_cache, sample_analysis_result)
+    
+    # 2. Check cache
+    cached_result = _check_cache(sample_incident_for_cache)
+    
+    # 3. Assertions
+    assert cached_result is not None
+    # Compare relevant fields, ignore timestamps potentially
+    assert cached_result.incident_id == sample_analysis_result.incident_id
+    assert cached_result.analysis_source == sample_analysis_result.analysis_source
+    assert cached_result.confidence_score == sample_analysis_result.confidence_score
+    assert cached_result.parsed_response == sample_analysis_result.parsed_response
+    assert cached_result.actionable_insights == sample_analysis_result.actionable_insights
+
+def test_add_to_cache_update(sample_incident_for_cache, sample_incident_for_cache_alt, sample_analysis_result):
+    """Test that adding an item with the same summary updates the existing entry."""
+    # 1. Add initial result
+    _add_to_cache(sample_incident_for_cache, sample_analysis_result)
+    
+    # 2. Create a modified result for the *same description hash* but different incident ID
+    updated_result_data = sample_analysis_result.model_copy(deep=True)
+    updated_result_data.incident_id = sample_incident_for_cache_alt.incident_id
+    updated_result_data.confidence_score = 0.99 # Change a field
+    
+    # 3. Add the updated result (should replace the old one due to summary key)
+    _add_to_cache(sample_incident_for_cache_alt, updated_result_data)
+    
+    # 4. Check cache using the original incident (same summary)
+    cached_result = _check_cache(sample_incident_for_cache)
+    
+    # 5. Assertions - Should retrieve the UPDATED result
+    assert cached_result is not None
+    assert cached_result.incident_id == sample_incident_for_cache_alt.incident_id # ID should be from the second add
+    assert cached_result.confidence_score == 0.99 # Confidence should be updated
+    assert cached_result.parsed_response == sample_analysis_result.parsed_response # Other parts remain same
+
+def test_add_to_cache_skips_errors(sample_incident_different, sample_analysis_result_error):
+    """Test that results with analysis_source='error' are not cached."""
+    # 1. Attempt to add the error result to cache
+    _add_to_cache(sample_incident_different, sample_analysis_result_error)
+    
+    # 2. Check cache - it should be a miss
+    cached_result = _check_cache(sample_incident_different)
+    
+    # 3. Assert
+    assert cached_result is None
+
+# Optional: Test DB error scenarios using mocking if needed
+# e.g., mock conn.cursor().execute() to raise sqlite3.Error 

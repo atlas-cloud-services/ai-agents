@@ -4,8 +4,10 @@ from typing import Dict, Any, Optional, List
 import json
 import httpx # Added for making HTTP requests
 import re # Added for regular expression matching
+import sqlite3 # Added for SQLite database
+import hashlib # Added for creating incident summary hash
 
-from .models import IncidentReport, AnalysisResult, LLMStructuredResponse, ActionableInsight
+from .models import IncidentReport, AnalysisResult, LLMStructuredResponse, ActionableInsight, CacheEntry # Added CacheEntry
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -14,6 +16,9 @@ logger = logging.getLogger(__name__)
 # Configuration for the LLM Service
 LLM_SERVICE_URL = "http://127.0.0.1:8001/generate"
 LLM_REQUEST_TIMEOUT = 60.0 # Timeout in seconds for the LLM call
+
+# Configuration for Cache
+CACHE_DB_PATH = "incident_cache.db"
 
 PROMPT_TEMPLATE = """
 Analyze the following incident report and provide a structured JSON response.
@@ -55,6 +60,44 @@ Instructions for Analysis:
 JSON Response:
 ```json
 """
+
+# --- Database Initialization --- 
+
+def _init_cache_db():
+    """Initializes the SQLite database and creates the cache table if it doesn't exist."""
+    try:
+        with sqlite3.connect(CACHE_DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS incident_analysis_cache (
+                incident_summary TEXT PRIMARY KEY, -- Hash of the description
+                analysis_result_json TEXT NOT NULL, -- JSON string of AnalysisResult
+                timestamp DATETIME NOT NULL
+            )
+            """)
+            conn.commit()
+            logger.info(f"Cache database initialized at {CACHE_DB_PATH}")
+    except sqlite3.Error as e:
+        logger.error(f"Error initializing cache database: {e}", exc_info=True)
+        # Agent might continue without caching if DB init fails
+
+# Call initialization once when the module loads
+# _init_cache_db() # <<< Commented out to rely on explicit initialization or fixture call
+
+# --- Helper Functions --- 
+
+def _get_incident_summary(description: str) -> str:
+    """Creates a short MD5 hash of the incident description to use as a cache key.
+
+    Args:
+        description: The incident description string.
+
+    Returns:
+        A hexadecimal MD5 hash string.
+    """
+    # Normalize whitespace and case for potentially better matching, though hash is sensitive
+    normalized_desc = ' '.join(description.lower().split())
+    return hashlib.md5(normalized_desc.encode()).hexdigest()
 
 def _create_llm_prompt(incident: IncidentReport) -> str:
     """Creates a structured prompt for the LLM based on the incident report.
@@ -119,9 +162,10 @@ async def _call_llm_service(prompt: str) -> Optional[str]:
         return None
 
 async def analyze_incident(incident: IncidentReport) -> AnalysisResult:
-    """Analyzes an incident report using an LLM.
+    """Analyzes an incident report using an LLM, with caching.
 
-    Orchestrates prompt creation, LLM call, and (soon) response processing.
+    Orchestrates cache check, prompt creation, LLM call, parsing, scoring, 
+    insight extraction, and cache update.
 
     Args:
         incident: The incident report data.
@@ -132,45 +176,45 @@ async def analyze_incident(incident: IncidentReport) -> AnalysisResult:
     start_time = datetime.datetime.now()
     logger.info(f"Starting analysis for incident ID: {incident.incident_id}")
 
+    # --- Step 1: Cache Check --- 
+    cached_result = _check_cache(incident)
+    if cached_result:
+        # Update timestamp and source for the cached result
+        cached_result.analysis_timestamp = datetime.datetime.now()
+        cached_result.analysis_source = "cache"
+        cached_result.processing_time_seconds = (datetime.datetime.now() - start_time).total_seconds()
+        logger.info(f"Analysis complete for incident ID: {incident.incident_id} from cache in {cached_result.processing_time_seconds:.2f}s")
+        return cached_result
+
+    # --- If Cache Miss, Proceed with LLM Analysis --- 
     analysis_result = AnalysisResult(
         incident_id=incident.incident_id,
         analysis_source="pending",
         errors=[]
     )
 
-    # --- TODO: Step 5: Implement Historical Cache Check --- 
-    # Check cache first
-    # cached_result = _check_cache(incident)
-    # if cached_result:
-    #     logger.info(f"Found cached result for incident ID: {incident.incident_id}")
-    #     cached_result.analysis_timestamp = datetime.datetime.now()
-    #     cached_result.analysis_source = "cache"
-    #     return cached_result
-
     # --- Step 2: Generate Prompt ---
     try:
         prompt = _create_llm_prompt(incident)
-        logger.debug(f"Generated prompt:\n{prompt[:300]}...") # Log beginning of prompt
+        logger.debug(f"Generated prompt:\n{prompt[:300]}...")
     except Exception as e:
         error_msg = f"Error creating LLM prompt: {e}"
         logger.error(error_msg, exc_info=True)
         analysis_result.errors.append(error_msg)
         analysis_result.analysis_source = "error"
         analysis_result.processing_time_seconds = (datetime.datetime.now() - start_time).total_seconds()
-        return analysis_result # Return early on prompt error
+        return analysis_result
 
     # --- Step 3: Call LLM Service --- 
     llm_raw_response = await _call_llm_service(prompt)
     
     if llm_raw_response is None:
-        # Error occurred during the LLM call, details already logged by _call_llm_service
         error_msg = "Failed to get response from LLM service."
         analysis_result.errors.append(error_msg)
         analysis_result.analysis_source = "error"
         analysis_result.processing_time_seconds = (datetime.datetime.now() - start_time).total_seconds()
-        return analysis_result # Return early on LLM call error
+        return analysis_result
 
-    # Store the raw response if successful
     analysis_result.llm_raw_response = llm_raw_response
 
     # --- Step 4: Parse LLM Response --- 
@@ -178,40 +222,37 @@ async def analyze_incident(incident: IncidentReport) -> AnalysisResult:
     
     if parsed_data:
         analysis_result.parsed_response = parsed_data
-        analysis_result.analysis_source = "llm"
+        analysis_result.analysis_source = "llm" # Source is LLM if parsing ok
     else:
         analysis_result.analysis_source = "error"
-        # Proceed even if parsing fails, to calculate a low confidence score
 
     # --- Step 5: Calculate Confidence Score --- 
     analysis_result.confidence_score = _calculate_confidence(
         parsed_data, 
-        llm_raw_response if llm_raw_response else ""
+        llm_raw_response
     )
 
     # --- Step 6: Extract Actionable Insights --- 
     if analysis_result.parsed_response:
         analysis_result.actionable_insights = _extract_insights(
             analysis_result.parsed_response, 
-            incident.incident_id # Pass incident_id for linking insights
+            incident.incident_id
         )
 
-    # --- TODO: Step 7: Add to Cache ---
-    # if analysis_result.analysis_source != "error": # Don't cache errors
-    #    _add_to_cache(incident, analysis_result)
+    # --- Step 7: Add to Cache --- 
+    # Add the result to cache only if the source wasn't an error
+    if analysis_result.analysis_source != "error":
+       _add_to_cache(incident, analysis_result)
 
     # --- Finalize ---
-    # Analysis source is set based on parsing success/failure
     end_time = datetime.datetime.now()
     analysis_result.processing_time_seconds = (end_time - start_time).total_seconds()
     if analysis_result.analysis_source != "error":
-        logger.info(f"Analysis complete for incident ID: {incident.incident_id} in {analysis_result.processing_time_seconds:.2f}s (Confidence: {analysis_result.confidence_score:.2f})")
+        logger.info(f"Analysis complete for incident ID: {incident.incident_id} via LLM in {analysis_result.processing_time_seconds:.2f}s (Confidence: {analysis_result.confidence_score:.2f})")
     else:
          logger.warning(f"Analysis for incident ID: {incident.incident_id} completed with errors in {analysis_result.processing_time_seconds:.2f}s (Confidence: {analysis_result.confidence_score:.2f})")
 
     return analysis_result
-
-# --- Placeholder/TODO functions --- 
 
 def _parse_llm_response(response: str, errors_list: list) -> Optional[LLMStructuredResponse]:
     """Parses the raw LLM response string to extract the structured JSON data.
@@ -376,36 +417,77 @@ def _extract_insights(parsed_data: LLMStructuredResponse, incident_id: str) -> L
     logger.info(f"Extracted {len(insights)} actionable insights.")
     return insights
 
-# --- Cache Functions (Example using simple dict, recommend SQLite/TinyDB for persistence) --- 
-# incident_cache: Dict[str, CacheEntry] = {}
-# def _get_incident_summary(incident: IncidentReport) -> str:
-#     # Create a simple hash or summary of the description for cache key
-#     # Be mindful of collisions if using basic hashing
-#     import hashlib
-#     return hashlib.md5(incident.description.encode()).hexdigest()[:16]
+# --- Cache Functions --- 
 
-# def _check_cache(incident: IncidentReport) -> Optional[AnalysisResult]:
-#     summary = _get_incident_summary(incident)
-#     entry = incident_cache.get(summary)
-#     if entry:
-#         # Optional: Add logic for cache expiry
-#         logger.info(f"Cache hit for incident summary: {summary}")
-#         # Return a copy to avoid modifying the cached object directly
-#         return entry.result.copy(deep=True)
-#     logger.info(f"Cache miss for incident summary: {summary}")
-#     return None
+def _check_cache(incident: IncidentReport) -> Optional[AnalysisResult]:
+    """Checks the cache for a previous analysis of a similar incident.
 
-# def _add_to_cache(incident: IncidentReport, result: AnalysisResult):
-#     # Requires incident_id on ActionableInsight to be set correctly before caching
-#     if result.analysis_source == 'error': # Don't cache errors
-#         return
-#     summary = _get_incident_summary(incident)
-#     entry = CacheEntry(
-#         incident_summary=summary,
-#         result=result.copy(deep=True), # Store a copy
-#         timestamp=datetime.datetime.now()
-#     )
-#     incident_cache[summary] = entry
-#     logger.info(f"Added analysis result to cache for summary: {summary}")
+    Args:
+        incident: The incoming incident report.
+
+    Returns:
+        A cached AnalysisResult if found, otherwise None.
+    """
+    summary = _get_incident_summary(incident.description)
+    logger.info(f"Checking cache for incident summary: {summary}")
+    try:
+        with sqlite3.connect(CACHE_DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT analysis_result_json FROM incident_analysis_cache WHERE incident_summary = ?",
+                (summary,)
+            )
+            row = cursor.fetchone()
+            if row:
+                logger.info(f"Cache hit for incident summary: {summary}")
+                # Deserialize JSON back into AnalysisResult object
+                analysis_result = AnalysisResult.model_validate_json(row[0])
+                return analysis_result
+            else:
+                logger.info(f"Cache miss for incident summary: {summary}")
+                return None
+    except sqlite3.Error as e:
+        logger.error(f"Error checking cache: {e}", exc_info=True)
+        return None
+    except Exception as e:
+        # Handles Pydantic validation errors during deserialization etc.
+        logger.error(f"Error deserializing cached result: {e}", exc_info=True)
+        # Optional: Could delete the corrupted cache entry here
+        return None
+
+def _add_to_cache(incident: IncidentReport, result: AnalysisResult):
+    """Adds or updates an analysis result in the cache.
+    
+    Only adds results that did not encounter errors during processing.
+
+    Args:
+        incident: The incident report used for the analysis.
+        result: The successful AnalysisResult to cache.
+    """
+    if result.analysis_source == 'error':
+        logger.warning("Skipping caching for result with errors.")
+        return
+        
+    summary = _get_incident_summary(incident.description)
+    try:
+        # Serialize the AnalysisResult object to JSON string
+        # Use exclude_none=True to potentially save space
+        result_json = result.model_dump_json(exclude_none=True)
+        
+        with sqlite3.connect(CACHE_DB_PATH) as conn:
+            cursor = conn.cursor()
+            # Use INSERT OR REPLACE to handle updates if the summary already exists
+            cursor.execute("""
+            INSERT OR REPLACE INTO incident_analysis_cache 
+            (incident_summary, analysis_result_json, timestamp)
+            VALUES (?, ?, ?)
+            """, (summary, result_json, datetime.datetime.now()))
+            conn.commit()
+            logger.info(f"Added/Updated analysis result in cache for summary: {summary}")
+    except sqlite3.Error as e:
+        logger.error(f"Error adding to cache: {e}", exc_info=True)
+    except Exception as e:
+        # Handles Pydantic serialization errors etc.
+        logger.error(f"Error serializing result for caching: {e}", exc_info=True)
 
 
