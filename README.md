@@ -1,58 +1,100 @@
 # ACS-AI-AGENTS
 
-This repository hosts the AI Agents developed for Atlas Cloud Services (ACS) GMAO project.
+This repository hosts the AI Agents developed for Atlas Cloud Services (ACS) GMAO project. It features a multi-agent architecture orchestrated by a Master Control Program (MCP).
 
-## Current Components
+## Architecture Overview
 
-### 1. LLM Service (`llm-service/`)
+The system consists of several independent services that communicate via APIs:
 
-Provides a basic API endpoint to interact with a Large Language Model (LLM).
+1.  **LLM Service (`llm-service/`)**: Provides access to Large Language Models (LLMs) with caching capabilities.
+2.  **Master Control Program (`mcp/`)**: Registers agents and routes messages between them based on capabilities.
+3.  **Incident Analysis Agent (`agents/incident/`)**: Analyzes incident reports using the LLM Service, providing insights, root cause analysis, and recommended actions. It registers itself with the MCP.
+4.  **Redis (`redis`)**: Used by the LLM Service for caching responses.
 
-**Features:**
+Each Python-based service follows a standard structure using FastAPI, with API endpoint logic separated from the main application setup:
 
-*   Loads a specified LLM (currently configured for `TinyLlama/TinyLlama-1.1B-Chat-v1.0` suitable for M1 Macs).
-*   Uses `torch` with MPS backend detection for Apple Silicon.
-*   Exposes a `/generate` endpoint via FastAPI.
-*   Includes interactive API documentation via Swagger UI (`/docs`) and ReDoc (`/redoc`).
+*   `api/main.py`: FastAPI application setup, configuration loading, lifespan management (startup/shutdown events like DB init or MCP registration).
+*   `api/endpoints.py`: Contains the `APIRouter` and endpoint function definitions.
+*   `models.py` (or similar): Pydantic models for API requests/responses and internal data structures.
+*   `requirements.txt`: Python dependencies.
+*   `Dockerfile`: Container build instructions.
 
-## Setup
+## Setup & Running (Docker Recommended)
+
+The recommended way to run the services is using Docker and Docker Compose.
+
+**Prerequisites:**
+
+*   Docker ([Install Docker](https://docs.docker.com/get-docker/))
+*   Docker Compose ([Usually included with Docker Desktop](https://docs.docker.com/compose/install/))
+
+**Running with Docker Compose:**
 
 1.  **Clone the repository:**
     ```bash
     git clone https://github.com/atlas-cloud-services/ACS-AI-AGENTS.git
     cd ACS-AI-AGENTS
     ```
-2.  **Create and activate a virtual environment:**
-    *   Ensure you have Python 3.10 or higher installed.
+2.  **(Optional) Create `.env` files:** For local overrides, create `.env` files within each service directory (`llm-service`, `mcp`, `agents/incident`) based on the `.env.example` files (if provided) or the environment variables defined in the respective `Dockerfile` and `docker-compose.yml`.
+3.  **Build and start the services:**
     ```bash
+    docker-compose up --build -d
+    ```
+    *   `--build`: Forces Docker to build the images before starting.
+    *   `-d`: Runs the containers in detached mode (in the background).
+
+4.  **Accessing the Services:**
+    *   **LLM Service:** `http://localhost:8001/status` (API endpoints under `/api/` e.g., `http://localhost:8001/api/generate`)
+    *   **MCP:** `http://localhost:8002/status` (API endpoints under `/api/` e.g., `http://localhost:8002/api/agents`)
+    *   **Incident Agent:** `http://localhost:8003/status` (API endpoints under `/api/` e.g., `http://localhost:8003/api/analyze`)
+    *   Each service also provides Swagger UI docs at `/api/docs` (e.g., `http://localhost:8001/api/docs`).
+
+5.  **Viewing Logs:**
+    ```bash
+    docker-compose logs -f # Stream logs from all services
+    docker-compose logs -f llm-service # Stream logs for a specific service
+    ```
+
+6.  **Stopping the Services:**
+    ```bash
+    docker-compose down
+    ```
+    *   Add `-v` to remove volumes (like Redis data and incident cache) if desired: `docker-compose down -v`
+
+## Running Services Individually (Local Development without Docker)
+
+If you prefer to run services directly on your host machine (e.g., for easier debugging):
+
+1.  **Clone the repository.**
+2.  **Set up Python environments:** Create and activate a separate virtual environment for *each* service (`llm-service`, `mcp`, `agents/incident`).
+    ```bash
+    # Example for llm-service
+    cd llm-service
     python3 -m venv venv
     source venv/bin/activate
-    ```
-    *(On Windows, use `venv\Scripts\activate`)*
-3.  **Install dependencies:**
-    ```bash
     pip install -r requirements.txt
+    cd ..
+    # Repeat for mcp and agents/incident
     ```
-
-## Running the LLM Service
-
-1.  **Activate the virtual environment:**
+3.  **Set Environment Variables:** Ensure required environment variables are set (e.g., `MCP_ENDPOINT`, `LLM_SERVICE_URL`, `REDIS_HOST`). You can use `.env` files (create them in each service directory) as `python-dotenv` is included.
+4.  **Start Redis:** You'll need a Redis instance running locally (e.g., `redis-server` or via Docker: `docker run -d -p 6379:6379 redis:alpine`).
+5.  **Run each service:** Open separate terminals for each service, activate its respective environment, and run using `uvicorn`:
     ```bash
-    source venv/bin/activate
-    ```
-2.  **Navigate to the service directory:**
-    ```bash
+    # Terminal 1: LLM Service
     cd llm-service
+    source venv/bin/activate
+    python -m uvicorn api.main:app --reload --port 8001
+
+    # Terminal 2: MCP
+    cd mcp
+    source venv/bin/activate
+    python -m uvicorn api.main:app --reload --port 8002
+
+    # Terminal 3: Incident Agent
+    cd agents/incident
+    source venv/bin/activate
+    python -m uvicorn api.main:app --reload --port 8003
     ```
-3.  **Run the Uvicorn server:**
-    ```bash
-    python3 -m uvicorn api.main:app --reload --port 8001
-    ```
-4.  **Access the API:**
-    *   **Root:** `http://127.0.0.1:8001/`
-    *   **Swagger UI:** `http://127.0.0.1:8001/docs`
-    *   **ReDoc:** `http://127.0.0.1:8001/redoc`
-    *   **Generate Endpoint (POST):** `http://127.0.0.1:8001/generate`
 
 ## Git Branches
 

@@ -8,7 +8,7 @@ import sqlite3 # Added for SQLite database
 import hashlib # Added for creating incident summary hash
 from pydantic import ValidationError # Added for specific error catching
 
-from .models import IncidentReport, AnalysisResult, LLMStructuredResponse, ActionableInsight, CacheEntry # Added CacheEntry
+from models import IncidentReport, AnalysisResult, LLMStructuredResponse, ActionableInsight, CacheEntry # Changed to absolute import
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -21,7 +21,7 @@ LLM_SERVICE_URL = "http://127.0.0.1:8001/generate"
 LLM_REQUEST_TIMEOUT = 120.0 # Increased from 60.0
 
 # Configuration for Cache
-CACHE_DB_PATH = "incident_cache.db"
+CACHE_DB_PATH = "/app/data/incident_cache.db"
 
 PROMPT_TEMPLATE = """
 Analyze the following incident report and provide ONLY a valid, structured JSON response adhering strictly to the schema below.

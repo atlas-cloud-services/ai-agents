@@ -1,7 +1,13 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional
-import time
+from fastapi import FastAPI, HTTPException, status
+import logging
+from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Load environment variables BEFORE accessing them for imports if needed
+load_dotenv()
 
 # Import the registry
 import sys
@@ -9,70 +15,26 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from orchestration.registry import registry, AgentInfo
 
-app = FastAPI(title="ACS GMAO AI - Master Control Program")
+# Import the API router
+from .endpoints import router as api_router
 
-class RegisterAgentRequest(BaseModel):
-    name: str
-    description: str
-    endpoint: str
-    capabilities: List[str]
+app = FastAPI(
+    title="ACS GMAO AI - Master Control Program (MCP)",
+    description="The Master Control Program orchestrates communication and tasks among various AI agents.",
+    version="0.2.0"
+)
 
-class RegisterAgentResponse(BaseModel):
-    agent_id: str
-    status: str = "success"
+# Include the API router
+app.include_router(api_router, prefix="/api")
 
-class MessageRequest(BaseModel):
-    content: str
-    source_agent_id: Optional[str] = None
-    target_capability: Optional[str] = None
-    metadata: Optional[dict] = None
+# Add a root status endpoint for the main app
+@app.get("/status", summary="Get MCP Root Status")
+def read_root_status():
+    """Returns the root status and version of the MCP."""
+    return {"status": "MCP is running", "version": app.version, "detail": "Check /api/ for detailed endpoints."}
 
-class MessageResponse(BaseModel):
-    message_id: str
-    status: str
-    responses: Optional[List[dict]] = None
-
-@app.get("/")
-def read_root():
-    return {"status": "MCP is running", "version": "0.1.0"}
-
-@app.post("/agents/register", response_model=RegisterAgentResponse)
-async def register_agent(request: RegisterAgentRequest):
-    agent_id = registry.register_agent(
-        name=request.name,
-        description=request.description,
-        endpoint=request.endpoint,
-        capabilities=request.capabilities
-    )
-    return {"agent_id": agent_id, "status": "success"}
-
-@app.get("/agents", response_model=List[AgentInfo])
-async def get_all_agents():
-    return registry.get_all_agents()
-
-@app.get("/agents/{agent_id}", response_model=AgentInfo)
-async def get_agent(agent_id: str):
-    agent = registry.get_agent(agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail=f"Agent with ID {agent_id} not found")
-    return agent
-
-@app.post("/message", response_model=MessageResponse)
-async def process_message(request: MessageRequest):
-    """
-    Process a message by routing it to appropriate agents.
-    This is a simplified implementation without actual agent communication.
-    """
-    message_id = f"msg_{int(time.time())}"
-    
-    # In a real implementation, we would:
-    # 1. Find appropriate agents based on target_capability
-    # 2. Forward the message to those agents
-    # 3. Collect and aggregate responses
-    
-    # For now, we just acknowledge receipt
-    return {
-        "message_id": message_id,
-        "status": "processed",
-        "responses": []
-    }
+# --- Helper for Running (if main script) ---
+# (Consider using a separate run script or docker compose)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8002, reload=True)
