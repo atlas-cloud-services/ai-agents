@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:alpine
+    container_name: redis-cache
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+        test: ["CMD", "redis-cli", "ping"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+
+  llm-service:
+    build:
+      context: ./llm-service
+      dockerfile: Dockerfile
+    container_name: llm-service
+    ports:
+      - "8001:8001"
+    environment:
+      - REDIS_HOST=redis
+      # Add other LLM specific env vars if needed
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+        test: ["CMD", "curl", "--fail", "http://localhost:8001/status"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+        start_period: 60s # Give time for model loading
+
+  mcp:
+    build:
+      context: ./mcp
+      dockerfile: Dockerfile # Assuming mcp/Dockerfile exists or will be created
+    container_name: mcp
+    ports:
+      - "8002:8002"
+    environment:
+      # Add any MCP specific env vars if needed
+      - PYTHONUNBUFFERED=1
+    # MCP doesn't strictly depend on others to start, 
+    # but agents depend on it for registration.
+    # depends_on: # No explicit dependencies needed for MCP itself to start
+    #   - redis # If MCP uses Redis directly
+    healthcheck:
+        test: ["CMD", "curl", "--fail", "http://localhost:8002/status"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+        start_period: 10s
+
+  incident-agent:
+    build:
+      context: ./agents/incident
+      dockerfile: Dockerfile
+    container_name: incident-agent
+    ports:
+      - "8003:8003"
+    environment:
+      - REDIS_HOST=redis # If analyzer uses cache directly
+      - MCP_ENDPOINT=http://mcp:8002/api # Use service name
+      - LLM_SERVICE_URL=http://llm-service:8001/api/generate # Use service name
+      - AGENT_ENDPOINT=http://incident-agent:8003/api # For registration
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      redis:
+        condition: service_healthy
+      llm-service:
+        condition: service_healthy
+      mcp:
+        condition: service_healthy # Wait for MCP to be healthy before trying to register
+    volumes:
+      # Optional: Mount local code for development
+      # - ./agents/incident:/app
+      # Persist SQLite DB in its specific location
+      - incident_cache_db:/app/data
+    healthcheck:
+        test: ["CMD", "curl", "--fail", "http://localhost:8003/status"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+        start_period: 20s # Give time for DB init and MCP registration attempt
+
+volumes:
+  redis_data:
+  incident_cache_db:
+  # Optional: Shared volume for models if not baked into llm-service image
+  # llm_models:
