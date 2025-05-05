@@ -1,0 +1,5 @@
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:120: Cache table verified/created in (provided connection)
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:310: Attempting to parse LLM response JSON...
+2025-05-05 17:52:07 [[33m WARNING[0m] agents.incident.analyzer:320: Could not find ```json delimiters. Attempting to parse entire response.
+2025-05-05 17:52:07 [[31m[1m   ERROR[0m] agents.incident.analyzer:323: LLM response is not enclosed in JSON object braces or ```json delimiters.
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:324: Raw response was: This is just plain text, no JSON here.

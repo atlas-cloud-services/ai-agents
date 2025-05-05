@@ -102,3 +102,13 @@ If you prefer to run services directly on your host machine (e.g., for easier de
 *   **`dev`**: Development branch where features are integrated.
 *   **`feature/*`**: Branches for developing new features.
 *   **`hotfix/*`**: Branches for critical production bug fixes.
+
+## Architecture Documentation
+
+The system architecture is documented with Mermaid diagrams to provide clear visual representations of components and interactions. View the [Architecture Overview](docs/architecture.md) for more details.
+
+Key diagrams include:
+- System architecture overview
+- Component interactions
+- Sequence flows
+- Deployment architecture

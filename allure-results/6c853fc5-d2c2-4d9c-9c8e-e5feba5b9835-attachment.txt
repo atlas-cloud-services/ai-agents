@@ -1,0 +1,12 @@
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:120: Cache table verified/created in (provided connection)
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:385: Calculating confidence score...
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:390: +20 points: Potential root causes present.
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:396: +20 points: Recommended actions present.
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:403: +10 points: Incident category present.
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:409: +10 points: Estimated resolution time present.
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:415: +5 points: Similar known issues present.
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:421: +5 points: Recommended documentation present.
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:435: +10 points: Root cause details (count=2, likelihood=True, explanation=True).
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:452: +10 points: Action details (count=3, type=True, prio=True, time=True, skills=True).
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:459: +10 points: Confidence explanation present.
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:465: Calculated confidence score: 1.00 (raw score: 100.0/100.0)
