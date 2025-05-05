@@ -1,0 +1,2 @@
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:120: Cache table verified/created in (provided connection)
+2024-08-15 11:30:00 [[32m    INFO[0m] agents.incident.analyzer:154: Creating LLM prompt for incident ID: INC-001

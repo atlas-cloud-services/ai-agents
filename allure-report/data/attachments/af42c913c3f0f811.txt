@@ -1,0 +1,4 @@
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:120: Cache table verified/created in (provided connection)
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:310: Attempting to parse LLM response JSON...
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:333: Successfully parsed JSON string: {'potential_root_causes': [{'cause': 'Unknown', 'likelihood': 'Unknown', 'explanation': 'Insufficient data'}], 'recommended_actions': [], 'similar_known_issues': [], 'recommended_documentation': [], 'confidence_explanation': 'Low confidence due to lack of details.'}
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:350: Successfully validated LLM response against enhanced Pydantic model.
