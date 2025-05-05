@@ -12,12 +12,9 @@ flowchart TD
 
         subgraph Agents["Agent Modules"]
             IAA[Incident Analysis Agent]
-            PMA[Predictive Maintenance Agent
-(Planned)]
-            TAA[Technician Assignment Agent
-(Planned)]
-            IMA[Inventory Management Agent
-(Planned)]
+            PMA["Predictive Maintenance Agent<br>(Planned)"]
+            TAA["Technician Assignment Agent<br>(Planned)"]
+            IMA["Inventory Management Agent<br>(Planned)"]
         end
 
         subgraph Services["Shared Services"]

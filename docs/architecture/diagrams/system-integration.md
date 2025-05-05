@@ -15,10 +15,10 @@ flowchart LR
         end
 
         subgraph Agents[Agent Modules]
-            IAA[Incident Analysis\nAgent]
-            PMA[Predictive Maintenance\nAgent (Planned)]
-            TAA[Technician Assignment\nAgent (Planned)]
-            IMA[Inventory Management\nAgent (Planned)]
+            IAA["Incident Analysis<br>Agent"]
+            PMA["Predictive Maintenance<br>Agent (Planned)"]
+            TAA["Technician Assignment<br>Agent (Planned)"]
+            IMA["Inventory Management<br>Agent (Planned)"]
         end
 
         subgraph LLMSvc[LLM Service]
