@@ -46,7 +46,7 @@ jobs:
         python -m pytest -v -m "e2e" --alluredir=./allure-results || echo "E2E tests failed or none found (non-critical)" 
     
     - name: Archive test results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always() # Always upload results, even if tests failed
       with:
         name: test-results
