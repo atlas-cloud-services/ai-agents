@@ -2,16 +2,30 @@
 
 This document describes the high-level architecture of the ACS-AI-AGENTS system.
 
+## Diagrams
+
+The following architectural diagrams provide visual representations of different aspects of the system:
+
+1. [System Architecture](architecture/diagrams/system-architecture.md) - High-level overview of the system components
+2. [Incident Analysis Sequence](architecture/diagrams/incident-sequence.md) - Flow of an incident analysis request
+3. [Incident Agent Components](architecture/diagrams/incident-agent-components.md) - Internal structure of the Incident Analysis Agent
+4. [MCP Architecture](architecture/diagrams/mcp-architecture.md) - Master Control Program components
+5. [Docker Deployment](architecture/diagrams/docker-deployment.md) - Container deployment architecture
+6. [Incident Agent Class Diagram](architecture/diagrams/incident-agent-class-diagram.md) - Class structure of the Incident Analysis Agent
+7. [System Integration](architecture/diagrams/system-integration.md) - Integration with external systems
+
 ## Components
 
 The system currently consists of the following main components:
 
-1.  **LLM Service:** A standalone FastAPI service responsible for loading and exposing a foundational Large Language Model via an API. It handles model loading (optimized for target hardware like M1 Macs) and text generation requests.
-    *   See [LLM Service Details](components/llm-service.md)
-2.  **Incident Analysis Agent:** An agent designed to receive incident reports, interact with the LLM Service for analysis, process the results, and provide structured insights.
-    *   See [Incident Analysis Agent Details](components/incident-agent.md)
-3.  **Master Control Program (MCP):** (Planned) The central orchestration component. It will act as a central router, manage agent registration and discovery, receive incoming requests (e.g., new incidents), identify the appropriate agent(s) to handle them based on capabilities, route the requests, and potentially aggregate responses.
-    *   See [Master Control Program (MCP) Details](components/mcp.md)
+1. **LLM Service:** A standalone FastAPI service responsible for loading and exposing a foundational Large Language Model via an API.
+2. **Incident Analysis Agent:** An agent designed to receive incident reports, interact with the LLM Service for analysis, process the results, and provide structured insights.
+3. **Master Control Program (MCP):** The central orchestration component that acts as a router, manages agent registration and discovery, and coordinates communication between agents.
+
+For component-specific details, see:
+- [LLM Service Details](components/llm-service.md)
+- [Incident Analysis Agent Details](components/incident-agent.md)
+- [Master Control Program (MCP) Details](components/mcp.md)
 
 ## Interaction Flow (Example: Incident Analysis)
 
