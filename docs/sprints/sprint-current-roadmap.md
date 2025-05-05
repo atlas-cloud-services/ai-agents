@@ -32,5 +32,5 @@ gantt
     AI-501: Architectural Documentation       :e1, 2025-05-15, 7d
     AI-502: CI/CD Pipeline                    :e2, after a5, 10d
     AI-503: User Documentation                :e3, after d3, 7d
-    AI-504: Production Deployment             :e4, after e2, after e3, 7d
+    AI-504: Production Deployment             :e4, after e3, 7d
 ``` 
