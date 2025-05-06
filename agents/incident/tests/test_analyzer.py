@@ -418,7 +418,7 @@ def setup_test_db(monkeypatch):
     # This ensures that even if a function *doesn't* get the connection passed,
     # it still uses an in-memory db (though it might be a different one).
     monkeypatch.setattr('agents.incident.analyzer.CACHE_DB_PATH', ':memory:')
-
+    
     # Create a single in-memory connection for the test
     conn = None
     try:
@@ -473,7 +473,7 @@ def test_add_to_cache_and_hit_enhanced(basic_incident, sample_enhanced_llm_respo
 
     # Add to cache using the connection
     _add_to_cache(basic_incident, full_result, conn=conn)
-
+    
     # Check cache using the connection
     cached_result = _check_cache(basic_incident, conn=conn)
 
@@ -580,7 +580,7 @@ async def test_analyze_incident_e2e_enhanced(
 #         "confidence_explanation": "Old Explanation"
 #     }
 #     return json.dumps(data)
-
+    
 # def test_parse_old_response_format(sample_old_llm_json_str):
 #     # This test would FAIL with the new _parse_llm_response because the
 #     # structure doesn't match LLMStructuredResponse anymore.

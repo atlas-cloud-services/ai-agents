@@ -153,3 +153,10 @@ cython_debug/
 
 # Cursor
 .cursor/
+
+# Environment variables file
+.env
+
+# Other common ignores
+*.tmp
+*.swp
