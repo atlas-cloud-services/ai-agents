@@ -7,9 +7,9 @@ This repository hosts the AI Agents developed for Atlas Cloud Services (ACS) GMA
 The system consists of several independent services that communicate via APIs:
 
 1.  **LLM Service (`llm-service/`)**: Provides access to Large Language Models (LLMs) with caching capabilities.
-2.  **Master Control Program (`mcp/`)**: Registers agents and routes messages between them based on capabilities.
+2.  **Master Control Program (`mcp/`)**: Registers agents and routes messages between them based on capabilities. It also includes an inbound webhook endpoint (`/api/v1/webhooks/gmao/incidents`) for receiving incident data from external GMAO systems.
 3.  **Incident Analysis Agent (`agents/incident/`)**: Analyzes incident reports using the LLM Service, providing insights, root cause analysis, and recommended actions. It registers itself with the MCP.
-4.  **Redis (`redis`)**: Used by the LLM Service for caching responses.
+4.  **Redis (`redis`)**: Used by the LLM Service for caching responses and potentially by other components in the future.
 
 Each Python-based service follows a standard structure using FastAPI, with API endpoint logic separated from the main application setup:
 

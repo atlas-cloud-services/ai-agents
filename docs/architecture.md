@@ -21,27 +21,31 @@ The system currently consists of the following main components:
 1. **LLM Service:** A standalone FastAPI service responsible for loading and exposing a foundational Large Language Model via an API.
 2. **Incident Analysis Agent:** An agent designed to receive incident reports, interact with the LLM Service for analysis, process the results, and provide structured insights.
 3. **Master Control Program (MCP):** The central orchestration component that acts as a router, manages agent registration and discovery, and coordinates communication between agents.
+4. **GMAO Webhook Integration (within MCP):** A specific API endpoint (`/api/v1/webhooks/gmao/incidents`) within the MCP designed to receive incident data from an external GMAO system. It handles authentication, data mapping, and asynchronous forwarding of incidents to the Incident Analysis Agent.
 
 For component-specific details, see:
 - [LLM Service Details](components/llm-service.md)
 - [Incident Analysis Agent Details](components/incident-agent.md)
 - [Master Control Program (MCP) Details](components/mcp.md)
+- [GMAO Webhook Integration Details](components/webhook-integration.md)
 
-## Interaction Flow (Example: Incident Analysis)
+## Interaction Flow (Example: Incident Analysis via GMAO Webhook)
 
-1.  An external system (e.g., monitoring tool, ticketing system) sends an incident report to the **Master Control Program (MCP)** (once implemented).
-2.  The MCP identifies the Incident Analysis Agent as capable of handling the report and routes the `IncidentReport` data to it.
-3.  *Currently:* The Incident Analysis Agent is invoked directly.
-4.  The Incident Analysis Agent receives the `IncidentReport` data.
-5.  It checks a local cache for similar past incidents.
-6.  If no suitable cache hit, it constructs a detailed prompt based on the incident details.
-7.  It sends a request containing the prompt to the `/generate` endpoint of the **LLM Service**.
-8.  The LLM Service processes the prompt using the loaded language model and returns the generated text.
-9.  The Incident Analysis Agent receives the raw LLM response.
-10. It parses the response, attempting to extract structured data (causes, actions, impact).
-11. It calculates a confidence score for the analysis.
-12. It extracts actionable insights from the recommendations.
-13. It stores the analysis result in the cache.
-14. It returns the final `AnalysisResult` object (potentially back to the MCP or the original caller).
+1.  An external **GMAO System** sends an incident report via a `POST` request to the `/api/v1/webhooks/gmao/incidents` endpoint on the **Master Control Program (MCP)**. The request includes an `X-GMAO-Token` for authentication.
+2.  The MCP authenticates the request. If successful, it maps the incoming `GmaoWebhookPayload` to an internal `IncidentReport` format.
+3.  The MCP schedules a background task (`forward_incident_to_agent`) to send this `IncidentReport` to the **Incident Analysis Agent** and immediately returns a `202 Accepted` response to the GMAO system with a `tracking_id`.
+4.  The background task in the MCP attempts to `POST` the `IncidentReport` to the Incident Analysis Agent, with built-in retry logic for transient errors.
+5.  The Incident Analysis Agent receives the `IncidentReport` data.
+6.  It checks a local cache for similar past incidents.
+7.  If no suitable cache hit, it constructs a detailed prompt based on the incident details.
+8.  It sends a request containing the prompt to the `/generate` endpoint of the **LLM Service**.
+9.  The LLM Service processes the prompt using the loaded language model and returns the generated text.
+10. The Incident Analysis Agent receives the raw LLM response.
+11. It parses the response, attempting to extract structured data (causes, actions, impact).
+12. It calculates a confidence score for the analysis.
+13. It extracts actionable insights from the recommendations.
+14. It stores the analysis result in the cache.
+15. It returns the final `AnalysisResult` object back to the MCP's background task.
+16. The MCP background task logs the outcome of the forwarding attempt.
 
 *(Diagrams could be added here later to illustrate the flow)* 

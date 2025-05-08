@@ -6,9 +6,10 @@ import httpx # Added for making HTTP requests
 import re # Added for regular expression matching
 import sqlite3 # Added for SQLite database
 import hashlib # Added for creating incident summary hash
+import os # <-- ADDED import
 from pydantic import ValidationError # Added for specific error catching
 
-from .models import IncidentReport, AnalysisResult, LLMStructuredResponse, ActionableInsight, CacheEntry # Changed to relative import
+from models import IncidentReport, AnalysisResult, LLMStructuredResponse, ActionableInsight, CacheEntry # Changed to direct import
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -17,8 +18,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 # Configuration for the LLM Service
-LLM_SERVICE_URL = "http://127.0.0.1:8001/generate"
-LLM_REQUEST_TIMEOUT = 120.0 # Increased from 60.0
+# MODIFIED: Read from environment variables, falling back to defaults
+LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://llm-service:8001/api/generate") 
+LLM_REQUEST_TIMEOUT = float(os.getenv("LLM_REQUEST_TIMEOUT", 120.0))
 
 # Configuration for Cache
 CACHE_DB_PATH = "/app/data/incident_cache.db"
@@ -42,34 +44,45 @@ Description:
 {{
   "potential_root_causes": [
     {{
-      "cause": "String describing potential root cause 1...",
-      "likelihood": "String indicating likelihood (e.g., High, Medium, Low)",
-      "explanation": "String explaining reasoning for this cause..."
+      "cause": "Example: Unstable network switch",
+      "likelihood": "High",
+      "explanation": "Example: Logs show repeated flapping on the core switch port."
     }},
-    {{...}} // Add more cause objects as needed
+    {{
+      "cause": "Example: Database overload",
+      "likelihood": "Medium",
+      "explanation": "Example: Monitoring indicates high CPU and memory on DB server during the incident timeframe."
+    }}
   ],
   "recommended_actions": [
     {{
-      "action": "String describing specific action 1...",
-      "type": "String categorizing the action (e.g., Investigate, Remediate, Configure, Escalate, Document)",
-      "target": "String identifying the target (system, component, etc.), or null",
-      "priority": Integer priority (e.g., 1-5) or null,
-      "estimated_time_minutes": Integer estimated time in minutes or null,
-      "required_skills": ["Skill 1", "Skill 2", ...]
+      "action": "Example: Check switch S12 logs for errors.",
+      "type": "Investigate",
+      "target": "Switch S12",
+      "priority": 1,
+      "estimated_time_minutes": 30,
+      "required_skills": ["Network Analysis", "Switch CLI"]
     }},
-    {{...}} // Add more action objects as needed
+    {{
+      "action": "Example: Restart application server App-01.",
+      "type": "Remediate",
+      "target": "App-01",
+      "priority": 2,
+      "estimated_time_minutes": 15,
+      "required_skills": ["Application Support"]
+    }}
   ],
-  "incident_category": "String categorizing the incident (e.g., Hardware, Software, Network, Security, User Error) or null",
-  "estimated_resolution_time_hours": Float estimated hours for full resolution or null,
+  "incident_category": "Network",
+  "estimated_resolution_time_hours": 2.5,
   "similar_known_issues": [
-    "String reference to similar issue 1 (e.g., Incident ID, KB Article #)",
-    "String reference to similar issue 2", ...
+    "INC-12345",
+    "KB-9876"
   ],
   "recommended_documentation": [
-    "String reference or link to relevant doc 1",
-    "String reference or link to relevant doc 2", ...
+    "Internal Wiki: Switch Troubleshooting Guide",
+    "Vendor Manual: Model XYZ Switch, Page 55"
   ],
-  "confidence_explanation": "String explaining overall analysis confidence..."
+  "confidence_explanation": "Example: Analysis based on symptom keywords and reported affected systems. High confidence in network issue, medium on specific component."
 }}
 ```
 
@@ -314,33 +327,42 @@ def _parse_llm_response(response: str, errors_list: list) -> Optional[LLMStructu
     # More robust regex might be needed if LLM output varies significantly.
     json_match = re.search(r"```json\s*({.*?})\s*```", response, re.DOTALL | re.IGNORECASE)
     
-    if not json_match:
-        # Fallback: try parsing the whole response if delimiters are missing
-        json_str = response.strip()
-        logger.warning("Could not find ```json delimiters. Attempting to parse entire response.")
-        if not (json_str.startswith('{') and json_str.endswith('}')):
-            error_msg = "LLM response is not enclosed in JSON object braces or ```json delimiters."
-            logger.error(error_msg)
-            logger.debug(f"Raw response was: {response}")
-            errors_list.append(error_msg)
-            return None
+    if json_match:
+        json_str_to_parse = json_match.group(1).strip()
+        logger.debug("Found JSON content within ```json ... ``` delimiters.")
     else:
-        json_str = json_match.group(1)
+        logger.warning("Could not find ```json delimiters. Attempting to extract JSON object directly.")
+        # Try to find the first '{' and last '}'
+        try:
+            start_index = response.index('{')
+            end_index = response.rindex('}') + 1
+            json_str_to_parse = response[start_index:end_index].strip()
+            logger.debug(f"Extracted potential JSON string from first '{{' to last '}}': {json_str_to_parse[:100]}...")
+        except ValueError:
+            # This means '{' or '}' was not found, which is problematic
+            logger.error("Could not find starting '{' or ending '}' in the LLM response.")
+            json_str_to_parse = response.strip() # Fallback to old behavior, likely to fail validation next
+
+    if not json_str_to_parse: # Should not happen if response is not None/empty
+        error_msg = "LLM response is empty or invalid."
+        logger.error(error_msg)
+        errors_list.append(error_msg)
+        return None
 
     # --- Attempt to parse JSON string --- 
     try:
-        parsed_json = json.loads(json_str)
+        parsed_json = json.loads(json_str_to_parse)
         logger.debug(f"Successfully parsed JSON string: {parsed_json}")
     except json.JSONDecodeError as e:
         error_msg = f"Failed to decode JSON from LLM response: {e}"
         logger.error(error_msg, exc_info=True)
-        logger.debug(f"Extracted JSON string was: {json_str}")
+        logger.debug(f"Extracted JSON string was: {json_str_to_parse}")
         errors_list.append(error_msg)
         return None
     except Exception as e:
         error_msg = f"Unexpected error parsing JSON: {e}"
         logger.error(error_msg, exc_info=True)
-        logger.debug(f"Extracted JSON string was: {json_str}")
+        logger.debug(f"Extracted JSON string was: {json_str_to_parse}")
         errors_list.append(error_msg)
         return None
 

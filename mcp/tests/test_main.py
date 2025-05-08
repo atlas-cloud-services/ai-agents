@@ -26,7 +26,7 @@ def test_client():
 def mock_route_message():
     """Fixture to mock the route_message_to_agents function."""
     # Note the path to mock: it's where the function is *imported* into, not where it's defined
-    with patch('mcp.api.main.route_message_to_agents', new_callable=AsyncMock) as mock_router:
+    with patch('mcp.api.endpoints.route_message_to_agents', new_callable=AsyncMock) as mock_router:
         yield mock_router
 
 # --- Test Cases ---
@@ -47,7 +47,7 @@ def test_process_message_success(test_client, mock_route_message):
     mock_route_message.return_value = mock_agent_response
 
     # Act
-    response = test_client.post("/message", json=request_payload)
+    response = test_client.post("/api/message", json=request_payload)
 
     # Assert
     assert response.status_code == 200
@@ -85,7 +85,7 @@ def test_process_message_routing_error(test_client, mock_route_message):
     mock_route_message.side_effect = Exception("Routing failed internally")
 
     # Act
-    response = test_client.post("/message", json=request_payload)
+    response = test_client.post("/api/message", json=request_payload)
 
     # Assert
     assert response.status_code == 503 # Service Unavailable
@@ -109,7 +109,7 @@ def test_process_message_agent_error_response(test_client, mock_route_message):
     mock_route_message.return_value = mock_agent_response
 
     # Act
-    response = test_client.post("/message", json=request_payload)
+    response = test_client.post("/api/message", json=request_payload)
 
     # Assert
     assert response.status_code == 200

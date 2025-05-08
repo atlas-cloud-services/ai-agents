@@ -8,22 +8,25 @@ import os
 import httpx
 from fastapi import Header, BackgroundTasks
 import datetime
+import asyncio
 
 # Assuming registry and route_message_to_agents are accessible
 # This might require adjustments based on actual project structure
 # If they are in the parent dir, relative imports might work or sys.path manipulation needed
 try:
-    from orchestration.registry import registry, AgentInfo
-    from orchestration.router import route_message_to_agents, AGENT_REQUEST_TIMEOUT
+    from orchestration.registry import registry, AgentInfo, AGENT_REQUEST_TIMEOUT
+    from orchestration.router import route_message_to_agents
 except ImportError:
     # Fallback or raise error if running endpoints standalone isn't intended
     # For now, let's assume they are available via the app context if needed
     # Or define dummy placeholders if needed for linting/type checking
-    class AgentInfo(BaseModel):
+    class AgentInfoPlaceholder(BaseModel):
         id: str
         name: str
     registry = None # Placeholder
     async def route_message_to_agents(capability: str, message_payload: Dict): return {} # Placeholder
+    AGENT_REQUEST_TIMEOUT = 15 # Placeholder for timeout value, align with actual if defined
+    AgentInfo = AgentInfoPlaceholder # Use placeholder if import fails
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -184,25 +187,21 @@ async def agent_heartbeat(agent_id: str, request: HeartbeatRequest):
 # Example: GMAO_WEBHOOK_API_KEY = os.getenv("GMAO_WEBHOOK_API_KEY")
 # Example: INCIDENT_AGENT_URL = os.getenv("INCIDENT_AGENT_URL", "http://incident-agent/api/analyze")
 
-# Placeholder for IncidentReport if not directly accessible by MCP
-class InternalIncidentReport(BaseModel):
-    incident_id: str
-    timestamp: datetime.datetime
-    description: str
-    priority: Optional[int] = None
-    affected_systems: Optional[List[str]] = None
-    reporter: Optional[str] = None
-    # Add any other fields expected by the Incident Analysis Agent
+# Import Pydantic models
+from pydantic import BaseModel, Field
+
+# Import registry and other MCP components (adjust paths as needed)
+from orchestration.registry import registry
+from agents.incident.models import IncidentReport # <-- This is our recent addition
 
 # Import webhook models (adjust path if models are in a different location within mcp)
-try:
-    from ..models.webhook import GmaoWebhookPayload, WebhookResponse
-except ImportError:
-    # Fallback for local testing if models are in the same dir or mcp/models/
-    from mcp.models.webhook import GmaoWebhookPayload, WebhookResponse
+from models.webhook import GmaoWebhookPayload, WebhookResponse
 
 GMAO_WEBHOOK_API_KEY = os.getenv("GMAO_WEBHOOK_API_KEY", "your-secret-gmao-api-key") # Replace with secure retrieval
 INCIDENT_AGENT_URL = os.getenv("INCIDENT_AGENT_URL", "http://localhost:8003/api/analyze") # Agent's /analyze endpoint
+
+MAX_FORWARD_ATTEMPTS = 3
+RETRY_DELAYS_SECONDS = [5, 10] # Delay after 1st, 2nd failed attempt respectively
 
 async def verify_api_key(x_gmao_token: str = Header(None)):
     """Dependency to verify the API key from the header."""
@@ -222,8 +221,8 @@ async def verify_api_key(x_gmao_token: str = Header(None)):
         )
     return x_gmao_token # Or just True, value not typically used
 
-def map_gmao_to_internal_incident(gmao_payload: GmaoWebhookPayload) -> InternalIncidentReport:
-    """Maps the GMAO webhook payload (based on Django Incident model) to the internal IncidentReport format."""
+def map_gmao_to_incident_report(gmao_payload: GmaoWebhookPayload) -> IncidentReport:
+    """Maps the GMAO webhook payload (based on Django Incident model) to the IncidentReport format."""
     logger.debug(f"Mapping GMAO payload for external ID: {gmao_payload.external_incident_id}")
     
     # Priority mapping (GMAO text to internal integer)
@@ -252,7 +251,7 @@ def map_gmao_to_internal_incident(gmao_payload: GmaoWebhookPayload) -> InternalI
     
     full_description = "".join(description_parts)
 
-    internal_report = InternalIncidentReport(
+    report = IncidentReport(
         incident_id=gmao_payload.external_incident_id, # Using GMAO's incident ID
         timestamp=gmao_payload.incident_created_at,    # Using when incident was created in GMAO
         description=full_description,
@@ -261,24 +260,57 @@ def map_gmao_to_internal_incident(gmao_payload: GmaoWebhookPayload) -> InternalI
         reporter=gmao_payload.reported_by_gmao_user_id   # Using GMAO user ID as reporter
     )
     logger.info(f"Successfully mapped GMAO incident {gmao_payload.external_incident_id} (Title: {gmao_payload.title}) to internal format.")
-    return internal_report
+    return report
 
-async def forward_incident_to_agent(incident_report: InternalIncidentReport):
-    """Asynchronously forwards the mapped incident to the Incident Analysis Agent."""
-    logger.info(f"Forwarding incident {incident_report.incident_id} to Incident Analysis Agent at {INCIDENT_AGENT_URL}")
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(INCIDENT_AGENT_URL, json=incident_report.model_dump(mode="json")) # Use model_dump for Pydantic v2
-            response.raise_for_status() # Raises an HTTPError if the HTTP request returned an unsuccessful status code
-            logger.info(f"Incident {incident_report.incident_id} successfully forwarded. Agent response: {response.status_code}")
-    except httpx.RequestError as e:
-        logger.error(f"Error sending incident {incident_report.incident_id} to agent: {e}", exc_info=True)
-        # TODO: Implement retry logic or dead-letter queue for failed forwards
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Incident Analysis Agent returned an error for {incident_report.incident_id}: {e.response.status_code} - {e.response.text}", exc_info=True)
-        # TODO: Handle specific agent error responses
+async def forward_incident_to_agent(incident_report: IncidentReport, tracking_id: str):
+    """Asynchronously forwards the mapped incident to the Incident Analysis Agent with retry logic."""
+    logger.info(f"[{tracking_id}] Attempting to forward incident {incident_report.incident_id} to agent at {INCIDENT_AGENT_URL}")
 
-@router.post("/api/v1/webhooks/gmao/incidents", 
+    if not INCIDENT_AGENT_URL:
+        logger.error(f"[{tracking_id}] INCIDENT_AGENT_URL is not configured. Cannot forward incident {incident_report.incident_id}.")
+        return
+
+    for attempt in range(1, MAX_FORWARD_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                logger.debug(f"[{tracking_id}] Forwarding attempt {attempt}/{MAX_FORWARD_ATTEMPTS} for incident {incident_report.incident_id}.")
+                response = await client.post(INCIDENT_AGENT_URL, json=incident_report.model_dump(mode="json"))
+                response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+                logger.info(f"[{tracking_id}] Successfully forwarded incident {incident_report.incident_id} to agent on attempt {attempt}. Response: {response.status_code}")
+                return  # Success, exit function
+        except httpx.RequestError as e:
+            logger.warning(f"[{tracking_id}] Request error on attempt {attempt}/{MAX_FORWARD_ATTEMPTS} forwarding incident {incident_report.incident_id} to agent: {e}")
+            if attempt == MAX_FORWARD_ATTEMPTS:
+                logger.error(f"[{tracking_id}] Final attempt failed. Request error forwarding incident {incident_report.incident_id} to agent: {e}", exc_info=True)
+                # No re-raise, allow background task to complete
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code >= 500: # Retry on 5xx server errors
+                logger.warning(f"[{tracking_id}] Agent returned server error {e.response.status_code} on attempt {attempt}/{MAX_FORWARD_ATTEMPTS} for incident {incident_report.incident_id}: {e.response.text}")
+                if attempt == MAX_FORWARD_ATTEMPTS:
+                    logger.error(f"[{tracking_id}] Final attempt failed. Agent returned server error {e.response.status_code} for incident {incident_report.incident_id}: {e.response.text}", exc_info=True)
+            else: # Non-retryable client error (4xx)
+                logger.error(f"[{tracking_id}] Agent returned client error {e.response.status_code} for incident {incident_report.incident_id}, not retrying: {e.response.text}", exc_info=True)
+                return # Do not retry for 4xx errors
+        except Exception as e:
+            logger.error(f"[{tracking_id}] Unexpected error on attempt {attempt}/{MAX_FORWARD_ATTEMPTS} forwarding incident {incident_report.incident_id}: {e}", exc_info=True)
+            if attempt == MAX_FORWARD_ATTEMPTS:
+                logger.error(f"[{tracking_id}] Final attempt failed with unexpected error forwarding incident {incident_report.incident_id}", exc_info=True)
+            # For truly unexpected errors, we might not want to retry indefinitely or at all
+            # depending on the error. For now, if it's not caught above, it will proceed to delay/retry if attempts remain.
+
+        # If not the last attempt and error was retryable, wait before next attempt
+        if attempt < MAX_FORWARD_ATTEMPTS:
+            try:
+                delay = RETRY_DELAYS_SECONDS[attempt - 1]
+                logger.info(f"[{tracking_id}] Waiting {delay}s before next forward attempt for incident {incident_report.incident_id}...")
+                await asyncio.sleep(delay)
+            except IndexError: # Should not happen if RETRY_DELAYS_SECONDS is sized for MAX_FORWARD_ATTEMPTS-1
+                logger.error(f"[{tracking_id}] Retry delay not configured for attempt {attempt}. Using default 5s.")
+                await asyncio.sleep(5)
+    
+    logger.error(f"[{tracking_id}] All {MAX_FORWARD_ATTEMPTS} attempts to forward incident {incident_report.incident_id} to agent failed.")
+
+@router.post("/v1/webhooks/gmao/incidents", 
             response_model=WebhookResponse,
             status_code=status.HTTP_202_ACCEPTED,
             summary="Receive Incident from GMAO System",
@@ -299,8 +331,8 @@ async def receive_gmao_incident(
 
     # 1. Map data to internal format
     try:
-        internal_incident_report = map_gmao_to_internal_incident(payload)
-        logger.info(f"[{tracking_id}] Payload mapped successfully for: {internal_incident_report.incident_id}")
+        incident_report_data = map_gmao_to_incident_report(payload)
+        logger.info(f"[{tracking_id}] Payload mapped successfully for: {incident_report_data.incident_id}")
     except Exception as e:
         logger.error(f"[{tracking_id}] Error mapping GMAO payload {payload.external_incident_id}: {e}", exc_info=True)
         # For critical mapping errors, you might choose to respond with an error immediately
@@ -310,8 +342,8 @@ async def receive_gmao_incident(
         )
 
     # 2. Schedule background task for forwarding to Incident Analysis Agent
-    background_tasks.add_task(forward_incident_to_agent, internal_incident_report)
-    logger.info(f"[{tracking_id}] Incident {internal_incident_report.incident_id} queued for forwarding to agent.")
+    background_tasks.add_task(forward_incident_to_agent, incident_report_data, tracking_id)
+    logger.info(f"[{tracking_id}] Incident {incident_report_data.incident_id} queued for forwarding to agent.")
 
     return WebhookResponse(
         status="success", 

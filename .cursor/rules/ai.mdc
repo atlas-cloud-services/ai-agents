@@ -47,3 +47,15 @@ Testing Enhancements
 Increase test coverage for edge cases
 Add performance-focused tests for Redis caching
 Implement integration tests between components
+Architecture First: Before implementing any significant feature, create or update the appropriate architecture diagrams using Mermaid syntax in the docs/architecture/diagrams/ directory.
+Test-Driven Development: Write tests before or alongside feature implementation. Ensure both unit tests and integration tests are created for each new component.
+Error Handling: Implement comprehensive error handling for all network calls between services. Use retry mechanisms with exponential backoff for transient failures.
+Configuration Management: All configurable values should be retrievable from environment variables with sensible defaults. Document all required environment variables.
+Consistent Logging: Include tracking IDs in all log messages for request traceability across services. Use appropriate log levels (INFO for normal operations, WARNING for potential issues, ERROR for failures).
+Model Documentation: All Pydantic models should include comprehensive field descriptions and examples using the latest Pydantic v2 syntax.
+Docker Compatibility: Ensure all changes are tested in the Docker environment. Pay special attention to inter-service communication, Python imports, and file paths.
+API Versioning: All external-facing APIs should include version in the path (e.g., /api/v1/...) to facilitate future non-breaking changes.
+Commit Convention: Follow the conventional commit format (feat/fix/docs/etc) with the JIRA ticket number and a concise description.
+Code Comments: Add detailed comments for complex logic, particularly for LLM interactions, data transformations, and asynchronous processing.
+Timeout Configuration: Explicitly configure timeouts for all inter-service HTTP requests based on expected processing times.
+Dependency Documentation: Document all third-party dependencies in requirements.txt with specific versions to ensure reproducible builds.
