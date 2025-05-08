@@ -1,0 +1,1 @@
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:120: Cache table verified/created in (provided connection)

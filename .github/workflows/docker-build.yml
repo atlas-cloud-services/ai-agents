@@ -1,0 +1,41 @@
+name: Build Docker Images
+
+on:
+  push:
+    branches: [ main, dev ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # List of services/directories containing Dockerfiles
+        service: [mcp, incident-agent, llm-service]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Determine context path
+      id: context
+      run: |
+        if [ "${{ matrix.service }}" == "incident-agent" ]; then
+          echo "path=./agents/incident" >> $GITHUB_OUTPUT
+        else
+          echo "path=./${{ matrix.service }}" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Build Docker image (No Push)
+      uses: docker/build-push-action@v4
+      with:
+        context: ${{ steps.context.outputs.path }}
+        push: false # Do not push for free accounts / verification only
+        tags: ${{ matrix.service }}:latest # Tag for local identification/testing if needed
+        # Enable BuildKit cache for faster builds
+        cache-from: type=gha
+        cache-to: type=gha,mode=max 

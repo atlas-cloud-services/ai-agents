@@ -1,0 +1,8 @@
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:120: Cache table verified/created in (provided connection)
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:310: Attempting to parse LLM response JSON...
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:333: Successfully parsed JSON string: {'potential_root_causes': [{'cause': 'Bad', 'explanation': 'Test'}], 'recommended_actions': []}
+2025-05-05 17:52:07 [[31m[1m   ERROR[0m] agents.incident.analyzer:354: LLM response JSON does not match expected schema: 1 validation error for LLMStructuredResponse
+potential_root_causes.0.likelihood
+  Field required [type=missing, input_value={'cause': 'Bad', 'explanation': 'Test'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:355: Parsed JSON was: {'potential_root_causes': [{'cause': 'Bad', 'explanation': 'Test'}], 'recommended_actions': []}

@@ -1,0 +1,3 @@
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:120: Cache table verified/created in (provided connection)
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:520: Checking cache for incident summary: c92eb49371c705df367bc7211c3f7bf6
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:543: Cache miss for incident summary: c92eb49371c705df367bc7211c3f7bf6

@@ -1,0 +1,14 @@
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:120: Cache table verified/created in (provided connection)
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:310: Attempting to parse LLM response JSON...
+2025-05-05 17:52:07 [[31m[1m   ERROR[0m] agents.incident.analyzer:336: Failed to decode JSON from LLM response: Expecting ',' delimiter: line 1 column 113 (char 112)
+Traceback (most recent call last):
+  File "/Users/mac/Desktop/ACS-AI-AGENTS/agents/incident/analyzer.py", line 332, in _parse_llm_response
+    parsed_json = json.loads(json_str)
+  File "/Library/Frameworks/Python.framework/Versions/3.10/lib/python3.10/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+  File "/Library/Frameworks/Python.framework/Versions/3.10/lib/python3.10/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+  File "/Library/Frameworks/Python.framework/Versions/3.10/lib/python3.10/json/decoder.py", line 353, in raw_decode
+    obj, end = self.scan_once(s, idx)
+json.decoder.JSONDecodeError: Expecting ',' delimiter: line 1 column 113 (char 112)
+2025-05-05 17:52:07 [[35m   DEBUG[0m] agents.incident.analyzer:337: Extracted JSON string was: {"potential_root_causes": [{"cause":"Bad","likelihood":"High","explanation":"Test"}], "recommended_actions": [] // Missing comma }

@@ -1,0 +1,16 @@
+{
+  "external_incident_id": "test-webhook-001",
+  "title": "Manual Webhook Test",
+  "description": "This is a test incident sent manually to verify the webhook endpoint.",
+  "status": "OPEN",
+  "priority": "MEDIUM",
+  "incident_created_at": "2023-10-28T15:00:00Z",
+  "image_url": null,
+  "affected_services": ["TestService1", "TestSystemA"],
+  "reported_by_gmao_user_id": "webhook_tester_script",
+  "gmao_link": "https://example.gmao.com/incidents/test-webhook-001",
+  "additional_data": {
+    "test_run_id": "run-123",
+    "environment": "development"
+  }
+} 

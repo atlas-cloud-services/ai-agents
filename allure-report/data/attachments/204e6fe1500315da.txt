@@ -1,0 +1,2 @@
+2025-05-05 17:52:07 [[32m    INFO[0m] agents.incident.analyzer:120: Cache table verified/created in (provided connection)
+2025-05-05 17:52:07 [[33m WARNING[0m] agents.incident.analyzer:379: Cannot calculate confidence score: LLM response parsing failed.
