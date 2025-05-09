@@ -7,7 +7,9 @@ This repository hosts the AI Agents developed for Atlas Cloud Services (ACS) GMA
 The system consists of several independent services that communicate via APIs:
 
 1.  **LLM Service (`llm-service/`)**: Provides access to Large Language Models (LLMs) with caching capabilities.
-2.  **Master Control Program (`mcp/`)**: Registers agents and routes messages between them based on capabilities. It also includes an inbound webhook endpoint (`/api/v1/webhooks/gmao/incidents`) for receiving incident data from external GMAO systems.
+2.  **Master Control Program (`mcp/`)**: Registers agents and routes messages between them based on capabilities. It also includes:
+    *   An inbound webhook endpoint (`/api/v1/webhooks/gmao/incidents`) for receiving incident data from external GMAO systems.
+    *   A callback mechanism to send analysis results back to the originating GMAO system.
 3.  **Incident Analysis Agent (`agents/incident/`)**: Analyzes incident reports using the LLM Service, providing insights, root cause analysis, and recommended actions. It registers itself with the MCP.
 4.  **Redis (`redis`)**: Used by the LLM Service for caching responses and potentially by other components in the future.
 
@@ -18,6 +20,52 @@ Each Python-based service follows a standard structure using FastAPI, with API e
 *   `models.py` (or similar): Pydantic models for API requests/responses and internal data structures.
 *   `requirements.txt`: Python dependencies.
 *   `Dockerfile`: Container build instructions.
+
+### GMAO Analysis Feedback Loop
+
+A key feature of the MCP is its ability to facilitate a feedback loop with the GMAO system. After an incident is received from GMAO and processed by the Incident Analysis Agent, the MCP can send the analysis results (summary, confidence score, recommended actions, status) back to a configured callback URL in the GMAO system.
+
+This requires the following:
+*   The GMAO system must expose an endpoint to receive these callback POST requests.
+*   The MCP must be configured with the GMAO's callback URL and an API key for authentication.
+
+### Environment Variables & Configuration
+
+Key environment variables for configuring the services (especially the MCP for the feedback loop) include:
+
+*   **For MCP (`mcp/.env`):**
+    *   `GMAO_WEBHOOK_API_KEY`: API key the MCP expects from the GMAO when receiving initial incidents.
+    *   `INCIDENT_AGENT_URL`: URL of the Incident Analysis Agent (e.g., `http://incident-agent:8003/api/analyze`).
+    *   `GMAO_CALLBACK_URL`: The full URL of the callback endpoint on the GMAO system where MCP should send analysis results (e.g., `http://gmao-backend:8000/api/v1/mcp_callbacks/incident_analysis/`). **Must include a trailing slash if the GMAO system (e.g., Django) requires it.**
+    *   `GMAO_CALLBACK_API_KEY`: The API key that the MCP will send to the GMAO callback endpoint for authentication.
+    *   `MCP_TO_AGENT_TIMEOUT`: Timeout in seconds for requests from MCP to the Incident Analysis Agent (e.g., `630.0`).
+*   **(Other services like `llm-service` and `agents/incident` also have their specific environment variables for LLM endpoints, Redis, MCP registration, etc. Refer to their respective `Dockerfile` or `.env.example` files.)**
+
+### Shared Docker Network (for Inter-Compose Communication)
+
+If the GMAO system and the ACS-AI-AGENTS are running in separate `docker-compose` environments but need to communicate (e.g., GMAO sending webhooks to MCP, and MCP sending callbacks to GMAO), they must be connected via a shared Docker network.
+
+1.  **Create an external network:**
+    ```bash
+    docker network create shared-acs-network
+    ```
+2.  **Configure `docker-compose.yml` in both projects:**
+    *   **Declare the external network:**
+        ```yaml
+        networks:
+          shared-acs-network:
+            external: true
+        ```
+    *   **Connect relevant services (e.g., `mcp` in `acs-ai-agents`, and the GMAO backend service) to this network:**
+        ```yaml
+        services:
+          your-service-name:
+            # ... other service config ...
+            networks:
+              - default # or your app-specific network
+              - shared-acs-network
+        ```
+    This allows services to resolve each other by their container names (e.g., MCP can reach `http://gmao-backend-container-name:port/...` and vice-versa).
 
 ## Setup & Running (Docker Recommended)
 
