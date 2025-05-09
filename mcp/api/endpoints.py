@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, status, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import time
 import logging
@@ -192,7 +192,7 @@ from pydantic import BaseModel, Field
 
 # Import registry and other MCP components (adjust paths as needed)
 from orchestration.registry import registry
-from agents.incident.models import IncidentReport # <-- This is our recent addition
+from agents.incident.models import IncidentReport, AnalysisResult, LLMStructuredResponse, ActionableInsight
 
 # Import webhook models (adjust path if models are in a different location within mcp)
 from models.webhook import GmaoWebhookPayload, WebhookResponse
@@ -200,8 +200,20 @@ from models.webhook import GmaoWebhookPayload, WebhookResponse
 GMAO_WEBHOOK_API_KEY = os.getenv("GMAO_WEBHOOK_API_KEY", "your-secret-gmao-api-key") # Replace with secure retrieval
 INCIDENT_AGENT_URL = os.getenv("INCIDENT_AGENT_URL", "http://localhost:8003/api/analyze") # Agent's /analyze endpoint
 
+# Configuration for GMAO Callback
+GMAO_CALLBACK_URL = os.getenv("GMAO_CALLBACK_URL")
+GMAO_CALLBACK_API_KEY = os.getenv("GMAO_CALLBACK_API_KEY")
+CALLBACK_MAX_ATTEMPTS = int(os.getenv("GMAO_CALLBACK_MAX_ATTEMPTS", "3"))
+CALLBACK_RETRY_DELAYS_SECONDS_STR = os.getenv("GMAO_CALLBACK_RETRY_DELAYS_SECONDS", "5,10")
+CALLBACK_RETRY_DELAYS_SECONDS = [int(d.strip()) for d in CALLBACK_RETRY_DELAYS_SECONDS_STR.split(',')]
+CALLBACK_TIMEOUT_SECONDS = float(os.getenv("GMAO_CALLBACK_TIMEOUT_SECONDS", "60.0"))
+
 MAX_FORWARD_ATTEMPTS = 3
 RETRY_DELAYS_SECONDS = [5, 10] # Delay after 1st, 2nd failed attempt respectively
+
+# --- Add new environment variable for MCP to Agent timeout ---
+# Default to 630 seconds (10.5 minutes), slightly longer than agent's default LLM timeout
+MCP_TO_AGENT_TIMEOUT = float(os.getenv("MCP_TO_AGENT_TIMEOUT", "630.0"))
 
 async def verify_api_key(x_gmao_token: str = Header(None)):
     """Dependency to verify the API key from the header."""
@@ -262,53 +274,261 @@ def map_gmao_to_incident_report(gmao_payload: GmaoWebhookPayload) -> IncidentRep
     logger.info(f"Successfully mapped GMAO incident {gmao_payload.external_incident_id} (Title: {gmao_payload.title}) to internal format.")
     return report
 
-async def forward_incident_to_agent(incident_report: IncidentReport, tracking_id: str):
-    """Asynchronously forwards the mapped incident to the Incident Analysis Agent with retry logic."""
-    logger.info(f"[{tracking_id}] Attempting to forward incident {incident_report.incident_id} to agent at {INCIDENT_AGENT_URL}")
+async def forward_incident_to_agent(incident_report: IncidentReport, tracking_id: str, original_external_incident_id: str):
+    # Ensure tracking_id is used consistently in logging
+    logger.info(f"[{tracking_id}] Forwarding incident {incident_report.incident_id} (external: {original_external_incident_id}) to agent at {INCIDENT_AGENT_URL}")
 
     if not INCIDENT_AGENT_URL:
         logger.error(f"[{tracking_id}] INCIDENT_AGENT_URL is not configured. Cannot forward incident {incident_report.incident_id}.")
+        # Send error callback to GMAO if agent URL is missing
+        error_payload = GMAOCallbackPayload(
+            external_incident_id=original_external_incident_id,
+            analysis_summary="MCP configuration error: Incident Analysis Agent URL not set.",
+            status="error_mcp_config",
+            recommended_actions=[],
+            confidence_score=None,
+            mcp_tracking_id=tracking_id
+        )
+        await send_analysis_to_gmao(error_payload, tracking_id)
         return
+
+    agent_analysis_result: Optional[AnalysisResult] = None
 
     for attempt in range(1, MAX_FORWARD_ATTEMPTS + 1):
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                logger.debug(f"[{tracking_id}] Forwarding attempt {attempt}/{MAX_FORWARD_ATTEMPTS} for incident {incident_report.incident_id}.")
+            # Use the new MCP_TO_AGENT_TIMEOUT for the client call to the incident agent
+            async with httpx.AsyncClient(timeout=MCP_TO_AGENT_TIMEOUT) as client:
+                logger.debug(f"[{tracking_id}] Forwarding attempt {attempt}/{MAX_FORWARD_ATTEMPTS} for incident {incident_report.incident_id} to agent. MCP Timeout: {MCP_TO_AGENT_TIMEOUT}s")
                 response = await client.post(INCIDENT_AGENT_URL, json=incident_report.model_dump(mode="json"))
-                response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
-                logger.info(f"[{tracking_id}] Successfully forwarded incident {incident_report.incident_id} to agent on attempt {attempt}. Response: {response.status_code}")
-                return  # Success, exit function
+                logger.debug(f"[{tracking_id}] Agent responded with status: {response.status_code}") # DEBUG: Log agent status code
+                response.raise_for_status()
+                logger.info(f"[{tracking_id}] Successfully forwarded incident {incident_report.incident_id} to agent on attempt {attempt}. Response status: {response.status_code}") # Ensure tracking_id used
+                
+                # --- START ENHANCED LOGGING ---
+                logger.info(f"[{tracking_id}] Agent responded successfully. Attempting to parse response for incident {incident_report.incident_id}.")
+                try:
+                    agent_response_json = response.json()
+                    # DEBUG: Log the raw JSON received from the agent
+                    logger.debug(f"[{tracking_id}] Agent raw response JSON: {agent_response_json}")
+                    # Use model_validate for Pydantic v2+
+                    agent_analysis_result = AnalysisResult.model_validate(agent_response_json)
+                    logger.info(f"[{tracking_id}] Successfully parsed AnalysisResult for {incident_report.incident_id}. Source: {agent_analysis_result.analysis_source if agent_analysis_result else 'N/A'}")
+                except Exception as parse_exc:
+                    logger.error(f"[{tracking_id}] FAILED to parse AnalysisResult from agent for incident {incident_report.incident_id}: {parse_exc}", exc_info=True)
+                    # Assign error result but continue to callback logic below if desired
+                    agent_analysis_result = AnalysisResult(
+                        incident_id=incident_report.incident_id, # Use the internal ID here
+                        errors=[f"MCP: Failed to parse agent response: {str(parse_exc)}"],
+                        analysis_source="error_parsing_mcp",
+                        actionable_insights=[], # Ensure list is initialized
+                        parsed_response=None   # Ensure optional fields are None if not available
+                    )
+                    # Decide if we should break here or attempt callback with the error status
+                    logger.warning(f"[{tracking_id}] Proceeding to callback despite agent response parsing error.")
+                # --- END ENHANCED LOGGING ---
+                break # Exit retry loop on successful agent communication (even if parsing failed, we might want to report that)
         except httpx.RequestError as e:
             logger.warning(f"[{tracking_id}] Request error on attempt {attempt}/{MAX_FORWARD_ATTEMPTS} forwarding incident {incident_report.incident_id} to agent: {e}")
             if attempt == MAX_FORWARD_ATTEMPTS:
                 logger.error(f"[{tracking_id}] Final attempt failed. Request error forwarding incident {incident_report.incident_id} to agent: {e}", exc_info=True)
-                # No re-raise, allow background task to complete
         except httpx.HTTPStatusError as e:
-            if e.response.status_code >= 500: # Retry on 5xx server errors
-                logger.warning(f"[{tracking_id}] Agent returned server error {e.response.status_code} on attempt {attempt}/{MAX_FORWARD_ATTEMPTS} for incident {incident_report.incident_id}: {e.response.text}")
+            logger.warning(f"[{tracking_id}] HTTP error {e.response.status_code} on attempt {attempt}/{MAX_FORWARD_ATTEMPTS} forwarding incident {incident_report.incident_id} to agent: {e.response.text[:200]}")
+            # For agent communication, typically don't retry 4xx errors as they indicate a problem with the request itself or agent-side rejection
+            if e.response.status_code < 500 and e.response.status_code not in [408, 429]: # 408 Request Timeout, 429 Too Many Requests
+                logger.error(f"[{tracking_id}] Non-retryable HTTP error {e.response.status_code} from agent for incident {incident_report.incident_id}. Aborting forward.", exc_info=True)
+                agent_analysis_result = AnalysisResult(
+                    incident_id=incident_report.incident_id,
+                    errors=[f"MCP: Agent returned non-retryable HTTP error {e.response.status_code}: {e.response.text[:100]}"],
+                    analysis_source="error_agent_response",
+                    actionable_insights=[],
+                    parsed_response=None
+                )
+                break # Stop retrying for client-side errors from agent
                 if attempt == MAX_FORWARD_ATTEMPTS:
-                    logger.error(f"[{tracking_id}] Final attempt failed. Agent returned server error {e.response.status_code} for incident {incident_report.incident_id}: {e.response.text}", exc_info=True)
-            else: # Non-retryable client error (4xx)
-                logger.error(f"[{tracking_id}] Agent returned client error {e.response.status_code} for incident {incident_report.incident_id}, not retrying: {e.response.text}", exc_info=True)
-                return # Do not retry for 4xx errors
-        except Exception as e:
-            logger.error(f"[{tracking_id}] Unexpected error on attempt {attempt}/{MAX_FORWARD_ATTEMPTS} forwarding incident {incident_report.incident_id}: {e}", exc_info=True)
+                    logger.error(f"[{tracking_id}] Final attempt failed. HTTP error forwarding incident {incident_report.incident_id} to agent: {e.response.status_code}", exc_info=True)
+        except Exception as e: # Catch-all for other unexpected errors during agent communication
+            logger.error(f"[{tracking_id}] Unexpected error on attempt {attempt}/{MAX_FORWARD_ATTEMPTS} forwarding incident {incident_report.incident_id} to agent: {e}", exc_info=True)
             if attempt == MAX_FORWARD_ATTEMPTS:
-                logger.error(f"[{tracking_id}] Final attempt failed with unexpected error forwarding incident {incident_report.incident_id}", exc_info=True)
-            # For truly unexpected errors, we might not want to retry indefinitely or at all
-            # depending on the error. For now, if it's not caught above, it will proceed to delay/retry if attempts remain.
+                logger.error(f"[{tracking_id}] Final attempt failed with unexpected error forwarding incident {incident_report.incident_id} to agent.", exc_info=True)
 
-        # If not the last attempt and error was retryable, wait before next attempt
         if attempt < MAX_FORWARD_ATTEMPTS:
-            try:
-                delay = RETRY_DELAYS_SECONDS[attempt - 1]
-                logger.info(f"[{tracking_id}] Waiting {delay}s before next forward attempt for incident {incident_report.incident_id}...")
-                await asyncio.sleep(delay)
-            except IndexError: # Should not happen if RETRY_DELAYS_SECONDS is sized for MAX_FORWARD_ATTEMPTS-1
-                logger.error(f"[{tracking_id}] Retry delay not configured for attempt {attempt}. Using default 5s.")
-                await asyncio.sleep(5)
+            # Use existing RETRY_DELAYS_SECONDS for agent forwarding
+            delay_index = min(attempt - 1, len(RETRY_DELAYS_SECONDS) - 1)
+            delay = RETRY_DELAYS_SECONDS[delay_index]
+            logger.info(f"[{tracking_id}] Retrying agent forward in {delay}s...")
+            await asyncio.sleep(delay)
+
+    # --- START ENHANCED LOGGING ---
+    logger.info(f"[{tracking_id}] Finished agent communication attempts. Result received: {'Yes' if agent_analysis_result else 'No'}")
+    # --- END ENHANCED LOGGING ---
+
+    # After attempting to contact the agent (or if it was skipped):
+    if agent_analysis_result:
+        # --- START ENHANCED LOGGING ---
+        logger.info(f"[{tracking_id}] AnalysisResult is available. Preparing to send analysis results back to GMAO for external incident ID: {original_external_incident_id}")
+        try:
+            gmao_payload = transform_to_gmao_format(agent_analysis_result, original_external_incident_id, tracking_id)
+            logger.info(f"[{tracking_id}] Payload transformed successfully for GMAO callback.")
+            # DEBUG: Log the payload going to GMAO (might be verbose)
+            logger.debug(f"[{tracking_id}] GMAO Callback Payload: {gmao_payload.model_dump_json(indent=2)}")
+            logger.info(f"[{tracking_id}] Initiating call to send_analysis_to_gmao.")
+            callback_success = await send_analysis_to_gmao(gmao_payload, tracking_id)
+            if callback_success:
+                logger.info(f"[{tracking_id}] Successfully initiated and completed callback sequence to GMAO for {original_external_incident_id}.")
+            else:
+                logger.error(f"[{tracking_id}] Callback sequence to GMAO for {original_external_incident_id} failed (send_analysis_to_gmao returned False).")
+        except Exception as transform_send_exc:
+             logger.error(f"[{tracking_id}] Error during transformation or sending callback for {original_external_incident_id}: {transform_send_exc}", exc_info=True)
+        # --- END ENHANCED LOGGING ---
+    elif INCIDENT_AGENT_URL: # Only if URL was configured and we didn't get a result
+         # --- START ENHANCED LOGGING ---
+         logger.error(f"[{tracking_id}] No AnalysisResult object available after agent communication for incident {incident_report.incident_id}. Attempting error callback to GMAO.")
+         # --- END ENHANCED LOGGING ---
+         error_payload = GMAOCallbackPayload(
+             external_incident_id=original_external_incident_id,
+             analysis_summary="Failed to obtain a valid analysis from the incident agent after multiple attempts.",
+             status="error_agent_unavailable_or_invalid_response",
+             recommended_actions=[],
+             confidence_score=None,
+             mcp_tracking_id=tracking_id
+         )
+         # --- START ENHANCED LOGGING ---
+         logger.info(f"[{tracking_id}] Initiating ERROR call to send_analysis_to_gmao.")
+         # --- END ENHANCED LOGGING ---
+         await send_analysis_to_gmao(error_payload, tracking_id)
+    else:
+        # Log if INCIDENT_AGENT_URL wasn't set (already handled earlier, but good for clarity)
+        logger.info(f"[{tracking_id}] INCIDENT_AGENT_URL was not configured, skipping agent communication and callback attempts.")
+
+# --- Pydantic Model for GMAO Callback ---
+class GMAOCallbackPayload(BaseModel):
+    external_incident_id: str = Field(..., description="Original Incident ID from GMAO.")
+    analysis_summary: str = Field(..., description="Summary of the analysis performed.")
+    confidence_score: Optional[float] = Field(None, description="Confidence score of the analysis (0.0 to 1.0).")
+    recommended_actions: List[str] = Field(default_factory=list, description="List of recommended actions.")
+    status: str = Field(..., description="Status of the analysis (e.g., 'analyzed', 'error_in_analysis', 'error_in_callback').")
+    analysis_timestamp: Optional[datetime.datetime] = None
+    mcp_tracking_id: Optional[str] = Field(None, description="MCP's internal tracking ID for this incident process.")
+
+# --- Helper function to transform AnalysisResult to GMAO format ---
+def transform_to_gmao_format(
+    analysis_result: AnalysisResult,
+    original_external_incident_id: str,
+    mcp_tracking_id: str
+) -> GMAOCallbackPayload:
+    logger.debug(f"[{mcp_tracking_id}] Transforming AnalysisResult for incident {original_external_incident_id} to GMAO format.")
     
-    logger.error(f"[{tracking_id}] All {MAX_FORWARD_ATTEMPTS} attempts to forward incident {incident_report.incident_id} to agent failed.")
+    summary_parts = []
+    actionable_insights = analysis_result.actionable_insights or []
+    parsed_response = analysis_result.parsed_response
+
+    if parsed_response and parsed_response.potential_root_causes:
+        causes_text = ", ".join([
+            rc.cause for rc in parsed_response.potential_root_causes if rc.cause and hasattr(rc, 'cause')
+        ])
+        if causes_text:
+            summary_parts.append(f"Potential Causes: {causes_text}")
+
+    if actionable_insights:
+        insights_summary = "; ".join([insight.description for insight in actionable_insights[:2] if hasattr(insight, 'description')])
+        if insights_summary:
+             summary_parts.append(f"Key Insights: {insights_summary}")
+    
+    analysis_summary = ". ".join(summary_parts)
+    if not analysis_summary and analysis_result.llm_raw_response:
+        analysis_summary = (analysis_result.llm_raw_response[:250] + "...") if len(analysis_result.llm_raw_response) > 250 else analysis_result.llm_raw_response
+    elif not analysis_summary:
+        analysis_summary = "Analysis complete. No specific summary points extracted."
+
+    recommended_actions_str = []
+    if actionable_insights:
+        for insight in actionable_insights:
+            action_detail = insight.description if hasattr(insight, 'description') else "N/A"
+            target_detail = insight.target if hasattr(insight, 'target') and insight.target else "N/A"
+            type_detail = insight.type if hasattr(insight, 'type') and insight.type else "N/A"
+            recommended_actions_str.append(
+                f"{action_detail} (Target: {target_detail}, Type: {type_detail})"
+            )
+    elif parsed_response and parsed_response.recommended_actions:
+        recommended_actions_str = [
+            action.action for action in parsed_response.recommended_actions if hasattr(action, 'action') and action.action
+        ]
+
+    current_status = "analyzed"
+    if analysis_result.errors:
+        current_status = "error_in_analysis"
+        error_details = '; '.join(analysis_result.errors)
+        analysis_summary = f"Errors during analysis: {error_details}. {analysis_summary}"[:1000] # Keep summary reasonable
+
+    return GMAOCallbackPayload(
+        external_incident_id=original_external_incident_id,
+        analysis_summary=analysis_summary,
+        confidence_score=analysis_result.confidence_score,
+        recommended_actions=recommended_actions_str,
+        status=current_status,
+        analysis_timestamp=analysis_result.analysis_timestamp,
+        mcp_tracking_id=mcp_tracking_id
+    )
+
+# --- Helper function to send analysis results back to GMAO ---
+async def send_analysis_to_gmao(payload: GMAOCallbackPayload, tracking_id: str):
+    logger.info(f"[{tracking_id}] Preparing to send analysis results to GMAO for incident {payload.external_incident_id}.")
+
+    if not GMAO_CALLBACK_URL:
+        logger.error(f"[{tracking_id}] GMAO_CALLBACK_URL is not configured. Cannot send analysis for {payload.external_incident_id}.")
+        # Optionally, raise an error or handle as per your application's requirements
+        return
+
+    # Ensure GMAO_CALLBACK_URL has a trailing slash
+    callback_url = GMAO_CALLBACK_URL
+    if not callback_url.endswith('/'):
+        logger.debug(f"[{tracking_id}] Appending trailing slash to GMAO_CALLBACK_URL.")
+        callback_url += '/'
+
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if GMAO_CALLBACK_API_KEY:
+        headers["X-Callback-Auth-Token"] = GMAO_CALLBACK_API_KEY # Adjust header name if GMAO expects different
+    
+    logger.info(f"[{tracking_id}] Attempting to send analysis results for {payload.external_incident_id} to GMAO at {callback_url}")
+
+    for attempt in range(1, CALLBACK_MAX_ATTEMPTS + 1):
+        try:
+            logger.info(f"[{tracking_id}] Attempt {attempt}/{CALLBACK_MAX_ATTEMPTS} sending analysis to GMAO at {callback_url} for {payload.external_incident_id}.") # Use callback_url
+            async with httpx.AsyncClient(timeout=CALLBACK_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    callback_url, # Use the modified callback_url
+                    json=payload.model_dump(mode="json"),
+                    headers=headers
+                )
+                response.raise_for_status()
+                logger.info(f"[{tracking_id}] Successfully sent analysis to GMAO for incident {payload.external_incident_id} on attempt {attempt}. Response: {response.status_code} {response.text[:100]}")
+                return True
+        except httpx.RequestError as e:
+            logger.warning(f"[{tracking_id}] Request error on attempt {attempt}/{CALLBACK_MAX_ATTEMPTS} sending analysis to GMAO for {payload.external_incident_id}: {e}")
+            if attempt == CALLBACK_MAX_ATTEMPTS:
+                logger.error(f"[{tracking_id}] Final attempt failed. Request error sending analysis to GMAO for {payload.external_incident_id}: {e}", exc_info=True)
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"[{tracking_id}] HTTP status error {e.response.status_code} on attempt {attempt}/{CALLBACK_MAX_ATTEMPTS} sending analysis to GMAO for {payload.external_incident_id}: {e.response.text[:200]}") # Log part of response
+            # Don't retry client errors (4xx) unless it's 429 (Too Many Requests) or specific retryable 4xx codes.
+            # For simplicity, we retry all 4xx here along with 5xx, but this could be refined.
+            if e.response.status_code < 500 and e.response.status_code not in [408, 429]: # Example: Don't retry 400, 401, 403, 404 etc.
+                 logger.error(f"[{tracking_id}] Non-retryable HTTP error {e.response.status_code} sending analysis to GMAO. Aborting.")
+                 break # Exit retry loop for these errors
+            if attempt == CALLBACK_MAX_ATTEMPTS:
+                logger.error(f"[{tracking_id}] Final attempt failed. HTTP error sending analysis to GMAO for {payload.external_incident_id}: {e.response.status_code}", exc_info=True)
+        except Exception as e:
+            logger.error(f"[{tracking_id}] Unexpected error on attempt {attempt}/{CALLBACK_MAX_ATTEMPTS} sending analysis to GMAO for {payload.external_incident_id}: {e}", exc_info=True)
+        
+        if attempt < CALLBACK_MAX_ATTEMPTS:
+            delay_index = min(attempt - 1, len(CALLBACK_RETRY_DELAYS_SECONDS) - 1)
+            delay = CALLBACK_RETRY_DELAYS_SECONDS[delay_index]
+            logger.info(f"[{tracking_id}] Retrying GMAO callback in {delay}s...")
+            await asyncio.sleep(delay)
+
+    logger.error(f"[{tracking_id}] Failed to send analysis to GMAO for incident {payload.external_incident_id} after {CALLBACK_MAX_ATTEMPTS} attempts.")
+    return False
 
 @router.post("/v1/webhooks/gmao/incidents", 
             response_model=WebhookResponse,
@@ -342,8 +562,9 @@ async def receive_gmao_incident(
         )
 
     # 2. Schedule background task for forwarding to Incident Analysis Agent
-    background_tasks.add_task(forward_incident_to_agent, incident_report_data, tracking_id)
-    logger.info(f"[{tracking_id}] Incident {incident_report_data.incident_id} queued for forwarding to agent.")
+    # Pass the original_external_incident_id to the background task
+    background_tasks.add_task(forward_incident_to_agent, incident_report_data, tracking_id, payload.external_incident_id)
+    logger.info(f"[{tracking_id}] Incident {incident_report_data.incident_id} (external: {payload.external_incident_id}) queued for forwarding to agent and GMAO callback.")
 
     return WebhookResponse(
         status="success", 

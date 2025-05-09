@@ -43,7 +43,13 @@ services:
       - PYTHONUNBUFFERED=1
       - GMAO_WEBHOOK_API_KEY=${GMAO_WEBHOOK_API_KEY}
       - INCIDENT_AGENT_URL=${INCIDENT_AGENT_URL}
+      - GMAO_CALLBACK_URL=${GMAO_CALLBACK_URL}
+      - GMAO_CALLBACK_API_KEY=${GMAO_CALLBACK_API_KEY}
+      - MCP_TO_AGENT_TIMEOUT=${MCP_TO_AGENT_TIMEOUT}
       # Add any other MCP specific env vars if needed, e.g., MCP_PORT=${MCP_PORT:-8002}
+    networks:
+      - default
+      - shared-acs-network
     # MCP doesn't strictly depend on others to start, 
     # but agents depend on it for registration.
     # depends_on: # No explicit dependencies needed for MCP itself to start
@@ -66,7 +72,7 @@ services:
       - REDIS_HOST=redis # If analyzer uses cache directly
       - MCP_ENDPOINT=http://mcp:8002/api # Use service name
       - LLM_SERVICE_URL=http://llm-service:8001/api/generate # Use service name
-      - LLM_REQUEST_TIMEOUT=300.0 # Added to increase timeout for LLM calls
+      - LLM_REQUEST_TIMEOUT=600.0 # Increased to 10 minutes
       - AGENT_ENDPOINT=http://incident-agent:8003/api # For registration
       - PYTHONUNBUFFERED=1
     depends_on:
@@ -93,3 +99,9 @@ volumes:
   incident_cache_db:
   # Optional: Shared volume for models if not baked into llm-service image
   # llm_models:
+
+networks:
+  default:
+    driver: bridge
+  shared-acs-network:
+    external: true

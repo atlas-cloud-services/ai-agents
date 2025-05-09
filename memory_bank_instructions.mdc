@@ -1,0 +1,42 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# memory_bank_instructions.mdc
+
+@description
+This project, ACS-AI-AGENTS, implements a multi-agent AI system for Atlas Cloud Services (ACS) designed to enhance a GMAO (Computerized Maintenance Management System) application. It features a Master Control Program (MCP) that orchestrates communication and task routing between various specialized AI agents and services. The primary focus is on analyzing incident reports and integrating with external GMAO systems.
+
+The system architecture includes:
+- **LLM Service (`llm-service/`)**: Provides centralized access to Large Language Models, featuring caching capabilities (via Redis) to optimize performance and costs.
+- **Master Control Program (`mcp/`)**: Manages agent registration, routes messages and tasks between agents based on their declared capabilities. It includes an inbound webhook (`/api/v1/webhooks/gmao/incidents`) for receiving incident data from external GMAO systems.
+- **Incident Analysis Agent (`agents/incident/`)**: A specialized agent that analyzes incident reports received via the MCP. It uses the LLM Service for tasks like root cause analysis and generating recommended actions.
+- **Shared Modules (`shared/`)**: Contains common code, utilities, or data models shared across different services or agents.
+- **Documentation (`docs/`)**: Contains architecture diagrams (e.g., using Mermaid) and other relevant project documentation.
+
+Each Python-based service generally follows a standard structure using FastAPI. The system is designed to be run using Docker and Docker Compose.
+
+@capabilities
+- Orchestration of multiple AI agents via a Master Control Program (MCP).
+- Natural Language Processing for incident report analysis (via LLM Service).
+- Root cause analysis and recommended action generation for GMAO incidents.
+- Integration with external GMAO systems via webhooks.
+- Centralized LLM access with caching.
+- Modular architecture with distinct services for LLM, MCP, and specific agents.
+- Standardized API structures (FastAPI) for inter-service communication.
+- Containerization using Docker for deployment and development.
+
+@source
+- `llm-service/`: Core service for Large Language Model access and caching.
+- `mcp/`: Master Control Program for agent registration and message routing.
+- `agents/`: Directory containing various specialized AI agents.
+    - `agents/incident/`: Agent for analyzing GMAO incident reports.
+- `shared/`: Location for shared Python modules, data models, or utilities used by multiple services/agents.
+- `docs/`: Project documentation, including architecture diagrams (e.g., `architecture.md`).
+- `README.md`: Comprehensive project overview, setup instructions (Docker, local), API access details, and Git branching strategy.
+- `docker-compose.yml`: Defines and configures the multi-container Docker application.
+- `requirements.txt`: Top-level Python dependencies (if any, usually per-service).
+
+@tags
+ai, multi-agent-system, mcp, gmao, cmms, nlp, llm, incident-analysis, automation, python, fastapi, docker, microservices, webhook-integration, atlas-cloud-services, acs, redis

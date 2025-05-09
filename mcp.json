@@ -1,0 +1,11 @@
+{
+    "memory": {
+      "providers": [
+        {
+          "path": "/Users/mac/mcp-memory-bank",
+          "name": "local-memory-bank"
+        }
+      ]
+    }
+  }
+  

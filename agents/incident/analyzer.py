@@ -186,6 +186,19 @@ async def _call_llm_service(prompt: str) -> Optional[str]:
     """
     logger.info("Calling LLM service...")
     payload = {"prompt": prompt}
+
+    # --- Enhanced Logging ---
+    logger.debug(f"LLM Prompt being sent:\\n{prompt}") # Log the full prompt
+    try:
+        # Attempt to serialize payload to string to get its size
+        payload_json_str = json.dumps(payload)
+        logger.info(f"Size of payload to LLM service: {len(payload_json_str)} bytes.")
+    except TypeError as e: # Catch specific error if payload is not serializable
+        logger.warning(f"Could not serialize payload to determine size for LLM service: {e}")
+    except Exception as e: # Catch any other unexpected error during size calculation
+        logger.warning(f"Could not determine payload size for LLM service due to an unexpected error: {e}")
+    # --- End Enhanced Logging ---
+
     try:
         async with httpx.AsyncClient(timeout=LLM_REQUEST_TIMEOUT) as client:
             response = await client.post(LLM_SERVICE_URL, json=payload)
