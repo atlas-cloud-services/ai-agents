@@ -2,9 +2,12 @@
 
 Welcome to the documentation for the ACS-AI-AGENTS project.
 
+> **Note**: This project is currently paused due to resource constraints. Please refer to the [Project Status](./project-status.md) document for current state and future plans.
+
 ## Sections
 
 *   [Project Overview](./project-overview.md)
+*   [Project Status](./project-status.md)
 *   [Installation Guide](./installation.md)
 *   [Architecture](./architecture.md)
 *   [Usage Guide](./usage.md)
