@@ -489,7 +489,7 @@ async def send_analysis_to_gmao(payload: GMAOCallbackPayload, tracking_id: str):
         "Content-Type": "application/json",
     }
     if GMAO_CALLBACK_API_KEY:
-        headers["X-Callback-Auth-Token"] = GMAO_CALLBACK_API_KEY # Adjust header name if GMAO expects different
+        headers["X-API-Key"] = GMAO_CALLBACK_API_KEY # Changed from X-Callback-Auth-Token to X-API-Key
     
     logger.info(f"[{tracking_id}] Attempting to send analysis results for {payload.external_incident_id} to GMAO at {callback_url}")
 
